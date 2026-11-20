@@ -122,6 +122,7 @@ class DownloadRequest:
     dest_dir: Path
     audio_format: AudioFormat = "mp3"
     is_playlist: bool = False
+    quality: str = "192"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +166,7 @@ class JobState:
             "url": self.request.url,
             "dest_dir": str(self.request.dest_dir),
             "audio_format": self.request.audio_format,
+            "quality": self.request.quality,
             "is_playlist": self.request.is_playlist,
             "status": self.status,
             "progress": self.progress.to_dict() if self.progress else None,
