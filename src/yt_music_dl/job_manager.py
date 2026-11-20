@@ -197,6 +197,7 @@ class JobManager:
 
             payload = final_snap.to_dict()
             payload["manifest"] = manifest.to_dict()
+            payload["promoted_files"] = [str(p) for p in promoted]
             self._event_bus.publish(job_id, "completed", payload)
 
         except CancelledDownloadError:

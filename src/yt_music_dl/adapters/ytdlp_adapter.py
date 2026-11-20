@@ -78,6 +78,13 @@ def build_ytdlp_options(
     else:
         outtmpl = str(staging_dir / "%(title)s.%(ext)s")
 
+    if request.audio_format == "m4a" and request.quality == "best":
+        preferred_quality = "0"
+    elif request.quality in {"320", "192", "best"}:
+        preferred_quality = "0" if request.quality == "best" else request.quality
+    else:
+        preferred_quality = "192"
+
     return {
         "format": "bestaudio/best",
         "outtmpl": outtmpl,
@@ -92,7 +99,7 @@ def build_ytdlp_options(
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": request.audio_format,
-                "preferredquality": "192",
+                "preferredquality": preferred_quality,
             },
             {
                 "key": "FFmpegThumbnailsConvertor",
@@ -140,6 +147,9 @@ class YtDlpAdapter:
             info = data.get("info_dict") or {}
             title = info.get("title") or data.get("filename") or "Track"
             thumb = info.get("thumbnail")
+            pl_index = info.get("playlist_index")
+            pl_count = info.get("n_entries") or info.get("playlist_count")
+            pl_prefix = f"Canción {pl_index} de {pl_count} • " if pl_index and pl_count else ""
 
             if status == "downloading":
                 total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
@@ -152,7 +162,7 @@ class YtDlpAdapter:
                         progress=round(min(max(pct, 0.0), 99.0), 1),
                         current_track=str(title),
                         thumbnail_url=thumb,
-                        message=f"Downloading {title}",
+                        message=f"{pl_prefix}Descargando {title}",
                     )
                 )
             elif status == "finished":
@@ -163,7 +173,7 @@ class YtDlpAdapter:
                         progress=99.0,
                         current_track=str(title),
                         thumbnail_url=thumb,
-                        message=f"Post-processing {title}",
+                        message=f"{pl_prefix}Procesando audio: {title}",
                     )
                 )
             elif status == "error":
@@ -240,6 +250,65 @@ class YtDlpAdapter:
             failed=tuple(failed),
             tracks=tuple(tracks),
         )
+
+    def preview(self, url: str) -> dict[str, Any]:
+        """Extract metadata for a YouTube video or playlist without downloading."""
+        opts: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": "in_playlist",
+            "skip_download": True,
+        }
+        with self._ydl_factory(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        if not isinstance(info, dict):
+            raise FatalDownloadError("No se pudieron obtener metadatos de la URL.")
+
+        entries_raw = info.get("entries")
+        is_playlist = info.get("_type") == "playlist" or entries_raw is not None
+        entries = [e for e in entries_raw if e is not None] if entries_raw is not None else []
+
+        if is_playlist:
+            track_count = int(info.get("playlist_count") or len(entries))
+            title = str(info.get("title") or "Playlist de YouTube")
+            author = str(
+                info.get("uploader")
+                or info.get("channel")
+                or info.get("playlist_uploader")
+                or "YouTube"
+            )
+        else:
+            track_count = 1
+            title = str(info.get("title") or "Pista de YouTube")
+            author = str(
+                info.get("uploader")
+                or info.get("channel")
+                or info.get("artist")
+                or "YouTube"
+            )
+
+        thumbnail = info.get("thumbnail")
+        if not thumbnail and isinstance(info.get("thumbnails"), list) and info["thumbnails"]:
+            thumbnail = info["thumbnails"][-1].get("url")
+        if not thumbnail and entries:
+            first = entries[0]
+            if isinstance(first, dict):
+                thumbnail = first.get("thumbnail")
+                if not thumbnail and isinstance(first.get("thumbnails"), list) and first["thumbnails"]:
+                    thumbnail = first["thumbnails"][-1].get("url")
+
+        return {
+            "title": title,
+            "author": author,
+            "channel": author,
+            "uploader": author,
+            "thumbnail": thumbnail,
+            "thumbnail_url": thumbnail,
+            "track_count": track_count,
+            "is_playlist": is_playlist,
+            "duration": info.get("duration"),
+        }
 
     @staticmethod
     def _read_archive_ids(archive_path: Path) -> set[str]:

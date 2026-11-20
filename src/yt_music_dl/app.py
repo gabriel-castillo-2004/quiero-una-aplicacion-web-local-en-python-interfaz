@@ -7,9 +7,11 @@ from typing import Any
 from urllib.parse import urlparse
 import os
 import secrets
+import subprocess
+import sys
 import tempfile
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
 from yt_music_dl.adapters.fs_adapter import LocalFileSystemAdapter
 from yt_music_dl.adapters.ytdlp_adapter import SystemPreflightAdapter, YtDlpAdapter
@@ -99,15 +101,56 @@ def create_app(
     def default_dir() -> tuple[Response, int]:
         return jsonify({"default_dir": str(fs.default_music_dir())}), 200
 
+    @app.post("/api/open-folder")
+    def open_folder() -> tuple[Response, int]:
+        payload: dict[str, Any] = request.get_json(silent=True) or {}
+        raw_dest = payload.get("dest_dir") or str(fs.default_music_dir())
+        try:
+            dest_path = validate_destination_dir(str(raw_dest), fs)
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(dest_path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(dest_path)])
+            else:
+                subprocess.Popen(["xdg-open", str(dest_path)])
+        except Exception as exc:
+            return jsonify({"error": f"No se pudo abrir la carpeta: {exc}"}), 500
+        return jsonify({"opened": str(dest_path)}), 200
+
+    @app.post("/api/preview")
+    def preview_url() -> tuple[Response, int]:
+        payload: dict[str, Any] = request.get_json(silent=True) or {}
+        raw_url = payload.get("url", "")
+        try:
+            clean_url = validate_youtube_url(raw_url)
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        adapter = YtDlpAdapter()
+        try:
+            metadata = adapter.preview(clean_url)
+        except Exception as exc:
+            return jsonify({"error": f"No se pudo obtener la vista previa: {exc}"}), 422
+        return jsonify(metadata), 200
+
     @app.post("/api/jobs")
     def create_job() -> tuple[Response, int]:
         payload: dict[str, Any] = request.get_json(silent=True) or {}
         raw_url = payload.get("url", "")
         raw_format = str(payload.get("format", "mp3")).lower()
+        raw_quality = str(
+            payload.get("quality", "192" if raw_format == "mp3" else "best")
+        ).lower()
         raw_dest = payload.get("dest_dir") or str(fs.default_music_dir())
 
         if raw_format not in {"mp3", "m4a"}:
             return jsonify({"error": "Unsupported audio format; use 'mp3' or 'm4a'."}), 400
+        if raw_quality not in {"320", "192", "best"}:
+            return jsonify({"error": "Unsupported quality; use '320', '192', or 'best'."}), 400
 
         try:
             clean_url = validate_youtube_url(raw_url)
@@ -121,6 +164,7 @@ def create_app(
             dest_dir=dest_path,
             audio_format=audio_format,
             is_playlist=is_playlist_url(clean_url),
+            quality=raw_quality,
         )
         job = job_manager.submit_job(req)
         return jsonify({"job_id": job.job_id, "status": job.status}), 201
@@ -139,6 +183,18 @@ def create_app(
             return jsonify({"error": "Job not found"}), 404
         job = job_manager.get_job(job_id)
         return jsonify({"job_id": job_id, "status": job.status if job else "cancelled"}), 200
+
+    @app.get("/api/jobs/<job_id>/audio/<int:index>")
+    def stream_job_audio(job_id: str, index: int) -> Response | tuple[Response, int]:
+        job = job_manager.get_job(job_id)
+        if job is None:
+            return jsonify({"error": "Job not found"}), 404
+        if index < 0 or index >= len(job.promoted_files):
+            return jsonify({"error": "Audio file not found"}), 404
+        audio_path = job.promoted_files[index]
+        if not audio_path.is_file():
+            return jsonify({"error": "Audio file missing on disk"}), 404
+        return send_file(audio_path, conditional=True)
 
     @app.get("/api/jobs/<job_id>/events")
     def job_events(job_id: str) -> Response | tuple[Response, int]:
