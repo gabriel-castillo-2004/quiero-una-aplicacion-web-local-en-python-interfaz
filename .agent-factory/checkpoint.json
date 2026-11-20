@@ -4,15 +4,13 @@
   "files_written": [
     "src/yt_music_dl/models.py",
     "src/yt_music_dl/adapters/ytdlp_adapter.py",
-    "src/yt_music_dl/job_manager.py",
     "src/yt_music_dl/app.py",
     "src/yt_music_dl/templates/index.html",
     "src/yt_music_dl/static/styles.css",
-    "src/yt_music_dl/static/app.js",
-    "src/yt_music_dl/static/favicon.svg"
+    "src/yt_music_dl/static/app.js"
   ],
-  "tests_passed": 38,
-  "tests_total": 38,
-  "tests_hash": "738b0cbc7c2c5baa5a29ec5db25482022fa7ec03f0077f9a7671904ea13a5072",
-  "updated_at": "2026-11-20T20:18:01.511964+00:00"
+  "tests_passed": 42,
+  "tests_total": 42,
+  "tests_hash": "44e2cc4e8772eb9f494d63780e759d52c46923e4ae22e218f28eb7ae15a2e05f",
+  "updated_at": "2026-11-20T20:27:56.695324+00:00"
 }

@@ -123,6 +123,7 @@ class DownloadRequest:
     audio_format: AudioFormat = "mp3"
     is_playlist: bool = False
     quality: str = "192"
+    selected_tracks: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
