@@ -76,6 +76,10 @@ def create_app(
     def index() -> str:
         return render_template("index.html", csrf_token=token)
 
+    @app.get("/favicon.ico")
+    def favicon_ico() -> Response:
+        return app.send_static_file("favicon.svg")
+
     @app.get("/api/health")
     def health() -> tuple[Response, int]:
         check = preflight.check_ffmpeg()
@@ -182,9 +186,10 @@ def main() -> None:
         fs=fs,
         preflight=preflight,
     )
-    port = int(os.environ.get("YT_MUSIC_DL_PORT", "8765"))
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8081"))
     try:
-        serve(app, host="127.0.0.1", port=port)
+        serve(app, host=host, port=port)
     finally:
         job_manager.shutdown()
 
