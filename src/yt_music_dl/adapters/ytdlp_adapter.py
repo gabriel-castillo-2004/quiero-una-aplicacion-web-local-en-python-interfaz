@@ -72,7 +72,7 @@ def build_ytdlp_options(
     if request.is_playlist:
         outtmpl = str(
             staging_dir
-            / "%(playlist_title|Playlist)s"
+            / "%(playlist_title)s"
             / "%(playlist_index&{:02d} - |)s%(title)s.%(ext)s"
         )
     else:
@@ -85,7 +85,7 @@ def build_ytdlp_options(
     else:
         preferred_quality = "192"
 
-    return {
+    opts: dict[str, Any] = {
         "format": "bestaudio/best",
         "outtmpl": outtmpl,
         "download_archive": str(archive_path),
@@ -114,6 +114,9 @@ def build_ytdlp_options(
             },
         ],
     }
+    if request.is_playlist and request.selected_tracks:
+        opts["playlist_items"] = ",".join(str(idx) for idx in request.selected_tracks)
+    return opts
 
 
 class YtDlpAdapter:
@@ -298,6 +301,29 @@ class YtDlpAdapter:
                 if not thumbnail and isinstance(first.get("thumbnails"), list) and first["thumbnails"]:
                     thumbnail = first["thumbnails"][-1].get("url")
 
+        tracks: list[dict[str, Any]] = []
+        if is_playlist:
+            for idx, entry in enumerate(entries, start=1):
+                if not isinstance(entry, dict):
+                    continue
+                entry_thumb = entry.get("thumbnail")
+                if (
+                    not entry_thumb
+                    and isinstance(entry.get("thumbnails"), list)
+                    and entry["thumbnails"]
+                ):
+                    entry_thumb = entry["thumbnails"][-1].get("url")
+                tracks.append(
+                    {
+                        "index": idx,
+                        "id": entry.get("id") or f"track-{idx}",
+                        "title": str(entry.get("title") or f"Pista {idx}"),
+                        "duration": entry.get("duration"),
+                        "thumbnail": entry_thumb,
+                        "thumbnail_url": entry_thumb,
+                    }
+                )
+
         return {
             "title": title,
             "author": author,
@@ -308,6 +334,7 @@ class YtDlpAdapter:
             "track_count": track_count,
             "is_playlist": is_playlist,
             "duration": info.get("duration"),
+            "tracks": tracks,
         }
 
     @staticmethod

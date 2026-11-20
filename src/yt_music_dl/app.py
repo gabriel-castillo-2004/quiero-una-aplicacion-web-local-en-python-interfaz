@@ -121,6 +121,32 @@ def create_app(
             return jsonify({"error": f"No se pudo abrir la carpeta: {exc}"}), 500
         return jsonify({"opened": str(dest_path)}), 200
 
+    @app.post("/api/pick-folder")
+    def pick_folder() -> tuple[Response, int]:
+        payload: dict[str, Any] = request.get_json(silent=True) or {}
+        initial_dir = str(payload.get("initial_dir") or fs.default_music_dir())
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+            chosen = filedialog.askdirectory(
+                initialdir=initial_dir if Path(initial_dir).is_dir() else str(fs.default_music_dir()),
+                title="Seleccionar carpeta de destino",
+            )
+            root.destroy()
+        except Exception as exc:
+            return jsonify({"error": f"Selector nativo no disponible: {exc}"}), 501
+
+        if not chosen:
+            return jsonify({"cancelled": True}), 200
+        return jsonify({"selected_dir": str(Path(chosen))}), 200
+
     @app.post("/api/preview")
     def preview_url() -> tuple[Response, int]:
         payload: dict[str, Any] = request.get_json(silent=True) or {}
@@ -158,6 +184,20 @@ def create_app(
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        raw_selected = payload.get("selected_tracks")
+        selected_tracks: tuple[int, ...] | None = None
+        if raw_selected is not None:
+            if not isinstance(raw_selected, list):
+                return jsonify({"error": "selected_tracks must be a list of track indices."}), 400
+            parsed_indices: list[int] = []
+            for item in raw_selected:
+                if isinstance(item, bool) or not isinstance(item, int) or item < 1:
+                    return jsonify({"error": "selected_tracks must contain positive integers."}), 400
+                if item not in parsed_indices:
+                    parsed_indices.append(item)
+            if parsed_indices:
+                selected_tracks = tuple(parsed_indices)
+
         audio_format: AudioFormat = "mp3" if raw_format == "mp3" else "m4a"
         req = DownloadRequest(
             url=clean_url,
@@ -165,6 +205,7 @@ def create_app(
             audio_format=audio_format,
             is_playlist=is_playlist_url(clean_url),
             quality=raw_quality,
+            selected_tracks=selected_tracks,
         )
         job = job_manager.submit_job(req)
         return jsonify({"job_id": job.job_id, "status": job.status}), 201
