@@ -15,6 +15,7 @@ const formError = document.getElementById('form-error');
 const ffmpegBanner = document.getElementById('ffmpeg-warning');
 
 const previewCard = document.getElementById('preview-card');
+const previewLoading = document.getElementById('preview-loading');
 const previewThumb = document.getElementById('preview-thumb');
 const previewType = document.getElementById('preview-type');
 const previewCount = document.getElementById('preview-count');
@@ -114,7 +115,7 @@ function saveRecentDir(dir) {
 function renderRecentDirChips() {
   if (!recentDirsChips) return;
   const dirs = loadRecentDirs();
-  recentDirsChips.innerHTML = '';
+  recentDirsChips.replaceChildren();
   for (const dir of dirs) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -162,7 +163,11 @@ function refreshPlaylistFilterOptions(items) {
   const playlists = Array.from(
     new Set(items.map((it) => it.playlist_title).filter((v) => typeof v === 'string' && v.trim()))
   );
-  historyPlaylistFilter.innerHTML = '<option value="">Todas las playlists</option>';
+  historyPlaylistFilter.replaceChildren();
+  const defaultOpt = document.createElement('option');
+  defaultOpt.value = '';
+  defaultOpt.textContent = 'Todas las playlists';
+  historyPlaylistFilter.appendChild(defaultOpt);
   for (const pl of playlists) {
     const opt = document.createElement('option');
     opt.value = pl;
@@ -195,7 +200,7 @@ function renderHistory() {
   playableQueue = filtered.filter((item) => item.audio_url && item.status === 'completed');
   updatePlayerButtons();
 
-  historyList.innerHTML = '';
+  historyList.replaceChildren();
   if (filtered.length === 0) {
     const empty = document.createElement('li');
     empty.className = 'sub';
@@ -385,7 +390,7 @@ function updateSelectedTracksSummary() {
 
 function renderPreviewTracks(tracks) {
   if (!trackSelectorDetails || !previewTracksList) return;
-  previewTracksList.innerHTML = '';
+  previewTracksList.replaceChildren();
   if (!Array.isArray(tracks) || tracks.length === 0) {
     trackSelectorDetails.classList.remove('visible');
     return;
@@ -463,7 +468,7 @@ if (selectNoneTracksBtn) {
 
 function renderLiveTrackQueue() {
   if (!liveTrackQueue) return;
-  liveTrackQueue.innerHTML = '';
+  liveTrackQueue.replaceChildren();
   for (const item of queueTracksState) {
     const li = document.createElement('li');
     li.className = 'live-queue-item';
@@ -537,11 +542,14 @@ function finalizeLiveQueueFromManifest(manifest, retryBasePayload) {
 
 async function fetchPreview(url) {
   if (!url || !/^https?:\/\//i.test(url)) {
-    previewCard.classList.remove('visible');
+    if (previewLoading) previewLoading.hidden = true;
+    previewCard.classList.remove('visible', 'is-loading');
     currentPreview = null;
     renderPreviewTracks([]);
     return;
   }
+  if (previewLoading) previewLoading.hidden = false;
+  previewCard.classList.add('visible', 'is-loading');
   try {
     const res = await fetch('/api/preview', {
       method: 'POST',
@@ -552,7 +560,7 @@ async function fetchPreview(url) {
       body: JSON.stringify({ url }),
     });
     if (!res.ok) {
-      previewCard.classList.remove('visible');
+      previewCard.classList.remove('visible', 'is-loading');
       currentPreview = null;
       renderPreviewTracks([]);
       return;
@@ -571,9 +579,12 @@ async function fetchPreview(url) {
       previewThumb.style.display = 'none';
     }
     renderPreviewTracks(data.tracks || []);
+    previewCard.classList.remove('is-loading');
     previewCard.classList.add('visible');
   } catch (_) {
-    previewCard.classList.remove('visible');
+    previewCard.classList.remove('visible', 'is-loading');
+  } finally {
+    if (previewLoading) previewLoading.hidden = true;
   }
 }
 

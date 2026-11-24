@@ -241,6 +241,38 @@ select:focus {
   display: flex;
 }
 
+.preview-card.is-loading .preview-top,
+.preview-card.is-loading .track-selector {
+  display: none;
+}
+
+.preview-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.25rem 0;
+}
+
+.preview-loading[hidden] {
+  display: none;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .preview-thumb {
   width: 88px;
   height: 66px;
@@ -596,6 +628,38 @@ progress::-webkit-progress-value {
 
 .preview-card.visible {
   display: flex;
+}
+
+.preview-card.is-loading .preview-top,
+.preview-card.is-loading .track-selector {
+  display: none;
+}
+
+.preview-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.25rem 0;
+}
+
+.preview-loading[hidden] {
+  display: none;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .preview-top {
