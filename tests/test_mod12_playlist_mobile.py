@@ -8,8 +8,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+import io
 import sys
 import time
+import zipfile
 
 _SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
 if _SRC_DIR not in sys.path:
@@ -247,3 +249,151 @@ def test_mod12_archive_skips_existing_tracks_and_uses_192k_mp3(tmp_path: Path) -
     assert manifest.skipped_archive == ("old123",)
     assert manifest.downloaded == ("Brand New Track",)
     assert [t.status for t in manifest.tracks] == ["skipped", "downloaded"]
+
+
+def test_mod12_playlist_zip_download_and_empty_or_missing_404(tmp_path: Path) -> None:
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+
+    class _PlaylistDownloader:
+        def download(
+            self,
+            request: DownloadRequest,
+            staging_dir: Path,
+            archive_path: Path,
+            on_progress: Any,
+            is_cancelled: Any,
+        ) -> DownloadManifest:
+            if "empty" in request.url:
+                return DownloadManifest(skipped_archive=("old1",))
+            playlist_dir = staging_dir / "Mi Playlist"
+            playlist_dir.mkdir(parents=True, exist_ok=True)
+            (playlist_dir / "01 - Track One.mp3").write_bytes(b"mp3-one")
+            (playlist_dir / "02 - Track Two.mp3").write_bytes(b"mp3-two")
+            return DownloadManifest(
+                downloaded=("Track One", "Track Two"),
+                tracks=(
+                    TrackResult(track_id="t1", title="Track One", status="downloaded"),
+                    TrackResult(track_id="t2", title="Track Two", status="downloaded"),
+                ),
+            )
+
+    app, manager = _build_test_app(tmp_path, downloader=_PlaylistDownloader())
+    try:
+        client = app.test_client()
+        resp = client.post(
+            "/api/jobs",
+            json={
+                "url": "https://www.youtube.com/playlist?list=PL_ZIP_1",
+                "format": "mp3",
+                "quality": "320",
+                "dest_dir": str(dest_dir),
+            },
+            headers={"X-CSRF-Token": "test-csrf-token"},
+        )
+        assert resp.status_code == 201
+        job_id = resp.get_json()["job_id"]
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            job_resp = client.get(f"/api/jobs/{job_id}")
+            assert job_resp.status_code == 200
+            if job_resp.get_json()["status"] == "completed":
+                break
+            time.sleep(0.02)
+
+        zip_resp = client.get(f"/api/jobs/{job_id}/zip")
+        assert zip_resp.status_code == 200
+        assert zip_resp.mimetype == "application/zip"
+        disposition = zip_resp.headers.get("Content-Disposition", "")
+        assert "attachment" in disposition
+        assert "Mi Playlist.zip" in disposition
+
+        with zipfile.ZipFile(io.BytesIO(zip_resp.data), mode="r") as zf:
+            names = {name.replace("\\", "/") for name in zf.namelist()}
+            assert names == {
+                "Mi Playlist/01 - Track One.mp3",
+                "Mi Playlist/02 - Track Two.mp3",
+            }
+            assert zf.read(next(n for n in zf.namelist() if "01 - Track One.mp3" in n)) == b"mp3-one"
+            assert zf.read(next(n for n in zf.namelist() if "02 - Track Two.mp3" in n)) == b"mp3-two"
+        zip_resp.close()
+
+        assert client.get("/api/jobs/nonexistent/zip").status_code == 404
+
+        empty_resp = client.post(
+            "/api/jobs",
+            json={
+                "url": "https://www.youtube.com/playlist?list=PL_empty",
+                "format": "mp3",
+                "quality": "192",
+                "dest_dir": str(dest_dir),
+            },
+            headers={"X-CSRF-Token": "test-csrf-token"},
+        )
+        assert empty_resp.status_code == 201
+        empty_job_id = empty_resp.get_json()["job_id"]
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if client.get(f"/api/jobs/{empty_job_id}").get_json()["status"] == "completed":
+                break
+            time.sleep(0.02)
+        assert client.get(f"/api/jobs/{empty_job_id}/zip").status_code == 404
+    finally:
+        manager.shutdown()
+
+
+def test_mod12_zip_button_in_ui_and_track_attachment_download(tmp_path: Path) -> None:
+    dest_dir = tmp_path / "music"
+    dest_dir.mkdir()
+
+    class _SingleDownloader:
+        def download(
+            self,
+            request: DownloadRequest,
+            staging_dir: Path,
+            archive_path: Path,
+            on_progress: Any,
+            is_cancelled: Any,
+        ) -> DownloadManifest:
+            out_file = staging_dir / "01 - Mobile Track.mp3"
+            out_file.write_bytes(b"mobile-mp3")
+            return DownloadManifest(
+                downloaded=(out_file.name,),
+                tracks=(TrackResult(track_id="m1", title="Mobile Track", status="downloaded"),),
+            )
+
+    app, manager = _build_test_app(tmp_path, downloader=_SingleDownloader())
+    try:
+        client = app.test_client()
+        html = client.get("/").get_data(as_text=True)
+        assert 'id="download-zip-btn"' in html
+        assert "Descargar ZIP para celular" in html
+
+        resp = client.post(
+            "/api/jobs",
+            json={
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "format": "mp3",
+                "quality": "192",
+                "dest_dir": str(dest_dir),
+            },
+            headers={"X-CSRF-Token": "test-csrf-token"},
+        )
+        assert resp.status_code == 201
+        job_id = resp.get_json()["job_id"]
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if client.get(f"/api/jobs/{job_id}").get_json()["status"] == "completed":
+                break
+            time.sleep(0.02)
+
+        dl_resp = client.get(f"/api/jobs/{job_id}/audio/0?download=1")
+        assert dl_resp.status_code == 200
+        assert "attachment" in dl_resp.headers.get("Content-Disposition", "")
+        assert "01 - Mobile Track.mp3" in dl_resp.headers.get("Content-Disposition", "")
+        assert dl_resp.data == b"mobile-mp3"
+        dl_resp.close()
+    finally:
+        manager.shutdown()

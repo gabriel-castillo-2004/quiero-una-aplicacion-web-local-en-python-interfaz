@@ -7,5 +7,5 @@
   "plan_summary": "Aplicación web local en Python (Flask + Waitress en 127.0.0.1) con interfaz HTML/JS vanilla minimalista para descargar canciones y playlists de YouTube usando yt-dlp y ffmpeg. Reconcilia la simplicidad de un monolito local sin base de datos ni bundler con una arquitectura ligera de puertos y adaptadores, cola serializada por job_id, staging atómico, SSE con snapshot/heartbeats y endurecimiento local (CSRF y validación Host/Origin).",
   "repo_url": "https://github.com/gabriel-castillo-2004/quiero-una-aplicacion-web-local-en-python-interfaz",
   "deploy_url": "",
-  "updated_at": "2026-11-26T16:29:37.902739+00:00"
+  "updated_at": "2026-11-26T16:33:37.160234+00:00"
 }
