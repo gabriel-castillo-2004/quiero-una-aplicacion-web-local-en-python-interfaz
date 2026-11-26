@@ -126,6 +126,12 @@ def create_app(
         payload: dict[str, Any] = request.get_json(silent=True) or {}
         initial_dir = str(payload.get("initial_dir") or fs.default_music_dir())
         try:
+            import _tkinter
+            tcl_error_cls: type[BaseException] = _tkinter.TclError
+        except Exception:
+            tcl_error_cls = Exception
+
+        try:
             import tkinter as tk
             from tkinter import filedialog
 
@@ -140,7 +146,7 @@ def create_app(
                 title="Seleccionar carpeta de destino",
             )
             root.destroy()
-        except Exception as exc:
+        except (tcl_error_cls, Exception) as exc:
             return jsonify({"error": f"Selector nativo no disponible: {exc}"}), 501
 
         if not chosen:

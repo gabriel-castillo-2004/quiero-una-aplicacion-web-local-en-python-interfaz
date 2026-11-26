@@ -15,6 +15,7 @@ const formError = document.getElementById('form-error');
 const ffmpegBanner = document.getElementById('ffmpeg-warning');
 
 const previewCard = document.getElementById('preview-card');
+const previewLoading = document.getElementById('preview-loading');
 const previewThumb = document.getElementById('preview-thumb');
 const previewType = document.getElementById('preview-type');
 const previewCount = document.getElementById('preview-count');
@@ -54,6 +55,49 @@ globalAudio.preload = 'metadata';
 
 const HISTORY_STORAGE_KEY = 'yt_music_dl_history_v2';
 const RECENT_DIRS_KEY = 'yt_music_dl_recent_dirs_v1';
+const FALLBACK_IMAGE_DATA_URI =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' +
+      '<rect width="64" height="64" rx="10" fill="#121620"/>' +
+      '<path d="M27 42V20l18-3v20" fill="none" stroke="#8b5cf6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="23" cy="43" r="4.5" fill="none" stroke="#06b6d4" stroke-width="3"/>' +
+      '<circle cx="41" cy="39" r="4.5" fill="none" stroke="#06b6d4" stroke-width="3"/>' +
+      '</svg>'
+  );
+
+function attachImageFallback(img) {
+  if (!img) return;
+  const applyFallback = () => {
+    if (img.dataset.fallbackApplied === '1') return;
+    img.dataset.fallbackApplied = '1';
+    img.classList.add('is-fallback');
+    img.src = FALLBACK_IMAGE_DATA_URI;
+  };
+  img.addEventListener('error', applyFallback);
+  if (!img.getAttribute('src')) {
+    applyFallback();
+  } else if (img.complete && img.naturalWidth === 0) {
+    applyFallback();
+  }
+}
+
+function setImageSource(img, url) {
+  if (!img) return;
+  if (url) {
+    img.dataset.fallbackApplied = '';
+    img.classList.remove('is-fallback');
+    img.src = url;
+  } else {
+    img.dataset.fallbackApplied = '1';
+    img.classList.add('is-fallback');
+    img.src = FALLBACK_IMAGE_DATA_URI;
+  }
+}
+
+attachImageFallback(previewThumb);
+attachImageFallback(trackThumb);
+attachImageFallback(playerThumb);
 
 let currentJobId = null;
 let currentJobMeta = null;
@@ -114,7 +158,7 @@ function saveRecentDir(dir) {
 function renderRecentDirChips() {
   if (!recentDirsChips) return;
   const dirs = loadRecentDirs();
-  recentDirsChips.innerHTML = '';
+  recentDirsChips.replaceChildren();
   for (const dir of dirs) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -162,7 +206,11 @@ function refreshPlaylistFilterOptions(items) {
   const playlists = Array.from(
     new Set(items.map((it) => it.playlist_title).filter((v) => typeof v === 'string' && v.trim()))
   );
-  historyPlaylistFilter.innerHTML = '<option value="">Todas las playlists</option>';
+  historyPlaylistFilter.replaceChildren();
+  const defaultOpt = document.createElement('option');
+  defaultOpt.value = '';
+  defaultOpt.textContent = 'Todas las playlists';
+  historyPlaylistFilter.appendChild(defaultOpt);
   for (const pl of playlists) {
     const opt = document.createElement('option');
     opt.value = pl;
@@ -195,7 +243,7 @@ function renderHistory() {
   playableQueue = filtered.filter((item) => item.audio_url && item.status === 'completed');
   updatePlayerButtons();
 
-  historyList.innerHTML = '';
+  historyList.replaceChildren();
   if (filtered.length === 0) {
     const empty = document.createElement('li');
     empty.className = 'sub';
@@ -217,13 +265,12 @@ function renderHistory() {
     const row = document.createElement('div');
     row.className = 'history-card-row';
 
-    if (item.thumbnail_url) {
-      const img = document.createElement('img');
-      img.className = 'history-thumb';
-      img.src = item.thumbnail_url;
-      img.alt = item.title || 'Portada';
-      row.appendChild(img);
-    }
+    const img = document.createElement('img');
+    img.className = 'history-thumb';
+    img.alt = item.title || 'Portada';
+    attachImageFallback(img);
+    setImageSource(img, item.thumbnail_url || '');
+    row.appendChild(img);
 
     const details = document.createElement('div');
     details.className = 'history-details';
@@ -298,12 +345,8 @@ function playTrackAtIndex(idx) {
   if (playerTitle) playerTitle.textContent = track.title || 'Sin título';
   if (playerArtist) playerArtist.textContent = track.author || track.playlist_title || 'Descarga local';
   if (playerThumb) {
-    if (track.thumbnail_url) {
-      playerThumb.src = track.thumbnail_url;
-      playerThumb.style.display = 'block';
-    } else {
-      playerThumb.style.display = 'none';
-    }
+    setImageSource(playerThumb, track.thumbnail_url || '');
+    playerThumb.style.display = 'block';
   }
   updatePlayerButtons();
   renderHistory();
@@ -385,7 +428,7 @@ function updateSelectedTracksSummary() {
 
 function renderPreviewTracks(tracks) {
   if (!trackSelectorDetails || !previewTracksList) return;
-  previewTracksList.innerHTML = '';
+  previewTracksList.replaceChildren();
   if (!Array.isArray(tracks) || tracks.length === 0) {
     trackSelectorDetails.classList.remove('visible');
     return;
@@ -409,8 +452,9 @@ function renderPreviewTracks(tracks) {
     if (thumbUrl) {
       const img = document.createElement('img');
       img.className = 'preview-track-thumb';
-      img.src = thumbUrl;
       img.alt = '';
+      attachImageFallback(img);
+      setImageSource(img, thumbUrl);
       label.appendChild(img);
     }
 
@@ -463,7 +507,7 @@ if (selectNoneTracksBtn) {
 
 function renderLiveTrackQueue() {
   if (!liveTrackQueue) return;
-  liveTrackQueue.innerHTML = '';
+  liveTrackQueue.replaceChildren();
   for (const item of queueTracksState) {
     const li = document.createElement('li');
     li.className = 'live-queue-item';
@@ -537,11 +581,14 @@ function finalizeLiveQueueFromManifest(manifest, retryBasePayload) {
 
 async function fetchPreview(url) {
   if (!url || !/^https?:\/\//i.test(url)) {
-    previewCard.classList.remove('visible');
+    if (previewLoading) previewLoading.hidden = true;
+    previewCard.classList.remove('visible', 'is-loading');
     currentPreview = null;
     renderPreviewTracks([]);
     return;
   }
+  if (previewLoading) previewLoading.hidden = false;
+  previewCard.classList.add('visible', 'is-loading');
   try {
     const res = await fetch('/api/preview', {
       method: 'POST',
@@ -552,7 +599,7 @@ async function fetchPreview(url) {
       body: JSON.stringify({ url }),
     });
     if (!res.ok) {
-      previewCard.classList.remove('visible');
+      previewCard.classList.remove('visible', 'is-loading');
       currentPreview = null;
       renderPreviewTracks([]);
       return;
@@ -564,16 +611,15 @@ async function fetchPreview(url) {
     previewType.textContent = data.is_playlist ? 'Playlist' : 'Canción';
     const count = Number(data.track_count || 1);
     previewCount.textContent = count === 1 ? '1 pista' : `${count} pistas`;
-    if (data.thumbnail || data.thumbnail_url) {
-      previewThumb.src = data.thumbnail || data.thumbnail_url;
-      previewThumb.style.display = 'block';
-    } else {
-      previewThumb.style.display = 'none';
-    }
+    setImageSource(previewThumb, data.thumbnail || data.thumbnail_url || '');
+    previewThumb.style.display = 'block';
     renderPreviewTracks(data.tracks || []);
+    previewCard.classList.remove('is-loading');
     previewCard.classList.add('visible');
   } catch (_) {
-    previewCard.classList.remove('visible');
+    previewCard.classList.remove('visible', 'is-loading');
+  } finally {
+    if (previewLoading) previewLoading.hidden = true;
   }
 }
 
@@ -683,8 +729,10 @@ function applySnapshot(data) {
     updateLiveQueueForProgress(data.current_track);
   }
   if (data.thumbnail_url) {
-    trackThumb.src = data.thumbnail_url;
+    setImageSource(trackThumb, data.thumbnail_url);
     trackThumb.style.display = 'block';
+  } else if (!trackThumb.getAttribute('src')) {
+    setImageSource(trackThumb, '');
   }
 
   const terminal = ['completed', 'failed', 'cancelled'].includes(status);
