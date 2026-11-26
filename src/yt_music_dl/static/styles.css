@@ -366,6 +366,17 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button.is-loading {
+  opacity: 0.78;
+  cursor: wait;
+}
+
+.spinner-sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
 .progress-card {
   display: none;
   gap: 0.85rem;

@@ -133,6 +133,7 @@ def create_app(
         except Exception:
             tcl_error_cls = Exception
 
+        root = None
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -147,9 +148,24 @@ def create_app(
                 initialdir=initial_dir if Path(initial_dir).is_dir() else str(fs.default_music_dir()),
                 title="Seleccionar carpeta de destino",
             )
-            root.destroy()
-        except (tcl_error_cls, Exception) as exc:
-            return jsonify({"error": f"Selector nativo no disponible: {exc}"}), 501
+        except (ImportError, tcl_error_cls, Exception):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "El selector nativo de carpetas no está disponible en este entorno. "
+                            "Escribe la ruta de destino manualmente."
+                        )
+                    }
+                ),
+                501,
+            )
+        finally:
+            if root is not None:
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
 
         if not chosen:
             return jsonify({"cancelled": True}), 200

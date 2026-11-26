@@ -913,9 +913,38 @@ if (pasteBtn) {
   });
 }
 
+const originalButtonNodes = new WeakMap();
+
+function setButtonLoading(btn, isLoading, loadingText) {
+  if (!btn) return;
+  if (isLoading) {
+    if (!originalButtonNodes.has(btn)) {
+      originalButtonNodes.set(btn, Array.from(btn.childNodes));
+    }
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner spinner-sm';
+    spinner.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.textContent = loadingText;
+    btn.replaceChildren(spinner, label);
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    btn.setAttribute('aria-busy', 'true');
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+    btn.setAttribute('aria-busy', 'false');
+    const saved = originalButtonNodes.get(btn);
+    if (saved) {
+      btn.replaceChildren(...saved);
+    }
+  }
+}
+
 if (pickFolderBtn) {
   pickFolderBtn.addEventListener('click', async () => {
     formError.textContent = '';
+    setButtonLoading(pickFolderBtn, true, 'Abriendo...');
     try {
       const res = await fetch('/api/pick-folder', {
         method: 'POST',
@@ -934,6 +963,8 @@ if (pickFolderBtn) {
       }
     } catch (_) {
       formError.textContent = 'No se pudo abrir el selector de carpetas.';
+    } finally {
+      setButtonLoading(pickFolderBtn, false);
     }
   });
 }
@@ -957,6 +988,7 @@ urlInput.addEventListener('input', () => {
 
 openFolderBtn.addEventListener('click', async () => {
   formError.textContent = '';
+  setButtonLoading(openFolderBtn, true, 'Abriendo...');
   try {
     const res = await fetch('/api/open-folder', {
       method: 'POST',
@@ -972,6 +1004,8 @@ openFolderBtn.addEventListener('click', async () => {
     }
   } catch (_) {
     formError.textContent = 'No se pudo comunicar con el servidor.';
+  } finally {
+    setButtonLoading(openFolderBtn, false);
   }
 });
 
