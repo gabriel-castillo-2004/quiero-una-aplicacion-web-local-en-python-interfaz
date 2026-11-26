@@ -135,7 +135,7 @@ class JobManager:
 
         staging_dir = self._staging_root / job_id
         staging_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = job.request.dest_dir / ".yt_music_dl_archive.txt"
+        archive_path = job.request.dest_dir / "archive.txt"
 
         self._transition_and_publish(
             job_id,

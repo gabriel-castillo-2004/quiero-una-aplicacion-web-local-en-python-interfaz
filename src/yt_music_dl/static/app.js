@@ -36,6 +36,7 @@ const progressPercent = document.getElementById('progress-percent');
 const progressMsg = document.getElementById('progress-message');
 const liveTrackQueue = document.getElementById('live-track-queue');
 const summaryEl = document.getElementById('summary');
+const downloadZipBtn = document.getElementById('download-zip-btn');
 
 const historySearch = document.getElementById('history-search');
 const historyPlaylistFilter = document.getElementById('history-playlist-filter');
@@ -302,6 +303,9 @@ function renderHistory() {
     row.appendChild(details);
 
     if (item.audio_url && item.status === 'completed') {
+      const itemActions = document.createElement('div');
+      itemActions.className = 'history-item-actions';
+
       const playBtn = document.createElement('button');
       playBtn.type = 'button';
       playBtn.className = 'btn-secondary btn-xs';
@@ -316,7 +320,16 @@ function renderHistory() {
           }
         }
       });
-      row.appendChild(playBtn);
+      itemActions.appendChild(playBtn);
+
+      const dlLink = document.createElement('a');
+      dlLink.className = 'btn-secondary btn-xs';
+      dlLink.href = `${item.audio_url}?download=1`;
+      dlLink.download = '';
+      dlLink.textContent = 'Descargar';
+      itemActions.appendChild(dlLink);
+
+      row.appendChild(itemActions);
     }
 
     li.appendChild(row);
@@ -677,6 +690,10 @@ async function finalizeHistoryFromJob(jobId, data) {
   }
 
   if (data.status === 'completed' && promoted.length > 0) {
+    if (downloadZipBtn) {
+      downloadZipBtn.href = `/api/jobs/${jobId}/zip`;
+      downloadZipBtn.hidden = false;
+    }
     const items = loadHistory().filter((it) => it.job_id !== jobId);
     promoted.forEach((filePath, idx) => {
       const fileName = String(filePath).split(/[\\/]/).pop() || `Pista ${idx + 1}`;
@@ -776,6 +793,10 @@ function startMonitoring(jobId) {
   currentJobId = jobId;
   cancelBtn.disabled = false;
   summaryEl.textContent = '';
+  if (downloadZipBtn) {
+    downloadZipBtn.hidden = true;
+    downloadZipBtn.href = '#';
+  }
 
   eventSource = new EventSource(`/api/jobs/${jobId}/events`);
   const handleEvent = (ev) => {
