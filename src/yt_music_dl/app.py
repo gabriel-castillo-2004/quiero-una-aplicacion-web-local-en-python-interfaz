@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+import io
 import os
 import secrets
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
@@ -131,6 +133,7 @@ def create_app(
         except Exception:
             tcl_error_cls = Exception
 
+        root = None
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -145,9 +148,24 @@ def create_app(
                 initialdir=initial_dir if Path(initial_dir).is_dir() else str(fs.default_music_dir()),
                 title="Seleccionar carpeta de destino",
             )
-            root.destroy()
-        except (tcl_error_cls, Exception) as exc:
-            return jsonify({"error": f"Selector nativo no disponible: {exc}"}), 501
+        except (ImportError, tcl_error_cls, Exception):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "El selector nativo de carpetas no está disponible en este entorno. "
+                            "Escribe la ruta de destino manualmente."
+                        )
+                    }
+                ),
+                501,
+            )
+        finally:
+            if root is not None:
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
 
         if not chosen:
             return jsonify({"cancelled": True}), 200
@@ -241,7 +259,49 @@ def create_app(
         audio_path = job.promoted_files[index]
         if not audio_path.is_file():
             return jsonify({"error": "Audio file missing on disk"}), 404
+        as_attachment = request.args.get("download") == "1"
+        if as_attachment:
+            return send_file(
+                audio_path,
+                as_attachment=True,
+                download_name=audio_path.name,
+            )
         return send_file(audio_path, conditional=True)
+
+    @app.get("/api/jobs/<job_id>/zip")
+    def download_job_zip(job_id: str) -> Response | tuple[Response, int]:
+        job = job_manager.get_job(job_id)
+        if job is None:
+            return jsonify({"error": "Job not found"}), 404
+
+        files = [p for p in job.promoted_files if p.is_file()]
+        if not files:
+            return jsonify({"error": "No audio files available for ZIP"}), 404
+
+        buffer = io.BytesIO()
+        dest_dir = job.request.dest_dir.resolve()
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_STORED) as zf:
+            for file_path in files:
+                resolved = file_path.resolve()
+                try:
+                    arcname = str(resolved.relative_to(dest_dir))
+                except ValueError:
+                    arcname = file_path.name
+                zf.write(resolved, arcname=arcname)
+        buffer.seek(0)
+
+        first_parent = files[0].parent.name
+        zip_stem = (
+            first_parent
+            if files[0].parent.resolve() != dest_dir and first_parent
+            else f"playlist-{job_id}"
+        )
+        return send_file(
+            buffer,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=f"{zip_stem}.zip",
+        )
 
     @app.get("/api/jobs/<job_id>/events")
     def job_events(job_id: str) -> Response | tuple[Response, int]:

@@ -36,6 +36,7 @@ const progressPercent = document.getElementById('progress-percent');
 const progressMsg = document.getElementById('progress-message');
 const liveTrackQueue = document.getElementById('live-track-queue');
 const summaryEl = document.getElementById('summary');
+const downloadZipBtn = document.getElementById('download-zip-btn');
 
 const historySearch = document.getElementById('history-search');
 const historyPlaylistFilter = document.getElementById('history-playlist-filter');
@@ -302,6 +303,9 @@ function renderHistory() {
     row.appendChild(details);
 
     if (item.audio_url && item.status === 'completed') {
+      const itemActions = document.createElement('div');
+      itemActions.className = 'history-item-actions';
+
       const playBtn = document.createElement('button');
       playBtn.type = 'button';
       playBtn.className = 'btn-secondary btn-xs';
@@ -316,7 +320,16 @@ function renderHistory() {
           }
         }
       });
-      row.appendChild(playBtn);
+      itemActions.appendChild(playBtn);
+
+      const dlLink = document.createElement('a');
+      dlLink.className = 'btn-secondary btn-xs';
+      dlLink.href = `${item.audio_url}?download=1`;
+      dlLink.download = '';
+      dlLink.textContent = 'Descargar';
+      itemActions.appendChild(dlLink);
+
+      row.appendChild(itemActions);
     }
 
     li.appendChild(row);
@@ -677,6 +690,10 @@ async function finalizeHistoryFromJob(jobId, data) {
   }
 
   if (data.status === 'completed' && promoted.length > 0) {
+    if (downloadZipBtn) {
+      downloadZipBtn.href = `/api/jobs/${jobId}/zip`;
+      downloadZipBtn.hidden = false;
+    }
     const items = loadHistory().filter((it) => it.job_id !== jobId);
     promoted.forEach((filePath, idx) => {
       const fileName = String(filePath).split(/[\\/]/).pop() || `Pista ${idx + 1}`;
@@ -776,6 +793,10 @@ function startMonitoring(jobId) {
   currentJobId = jobId;
   cancelBtn.disabled = false;
   summaryEl.textContent = '';
+  if (downloadZipBtn) {
+    downloadZipBtn.hidden = true;
+    downloadZipBtn.href = '#';
+  }
 
   eventSource = new EventSource(`/api/jobs/${jobId}/events`);
   const handleEvent = (ev) => {
@@ -892,9 +913,38 @@ if (pasteBtn) {
   });
 }
 
+const originalButtonNodes = new WeakMap();
+
+function setButtonLoading(btn, isLoading, loadingText) {
+  if (!btn) return;
+  if (isLoading) {
+    if (!originalButtonNodes.has(btn)) {
+      originalButtonNodes.set(btn, Array.from(btn.childNodes));
+    }
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner spinner-sm';
+    spinner.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.textContent = loadingText;
+    btn.replaceChildren(spinner, label);
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    btn.setAttribute('aria-busy', 'true');
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+    btn.setAttribute('aria-busy', 'false');
+    const saved = originalButtonNodes.get(btn);
+    if (saved) {
+      btn.replaceChildren(...saved);
+    }
+  }
+}
+
 if (pickFolderBtn) {
   pickFolderBtn.addEventListener('click', async () => {
     formError.textContent = '';
+    setButtonLoading(pickFolderBtn, true, 'Abriendo...');
     try {
       const res = await fetch('/api/pick-folder', {
         method: 'POST',
@@ -913,6 +963,8 @@ if (pickFolderBtn) {
       }
     } catch (_) {
       formError.textContent = 'No se pudo abrir el selector de carpetas.';
+    } finally {
+      setButtonLoading(pickFolderBtn, false);
     }
   });
 }
@@ -936,6 +988,7 @@ urlInput.addEventListener('input', () => {
 
 openFolderBtn.addEventListener('click', async () => {
   formError.textContent = '';
+  setButtonLoading(openFolderBtn, true, 'Abriendo...');
   try {
     const res = await fetch('/api/open-folder', {
       method: 'POST',
@@ -951,6 +1004,8 @@ openFolderBtn.addEventListener('click', async () => {
     }
   } catch (_) {
     formError.textContent = 'No se pudo comunicar con el servidor.';
+  } finally {
+    setButtonLoading(openFolderBtn, false);
   }
 });
 

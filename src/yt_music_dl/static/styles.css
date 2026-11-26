@@ -366,6 +366,17 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button.is-loading {
+  opacity: 0.78;
+  cursor: wait;
+}
+
+.spinner-sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
 .progress-card {
   display: none;
   gap: 0.85rem;
@@ -881,4 +892,80 @@ progress::-webkit-progress-value {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+a.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  text-decoration: none;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+}
+
+a.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+a.btn-secondary.btn-xs {
+  padding: 0.3rem 0.65rem;
+  font-size: 0.78rem;
+  border-radius: 8px;
+}
+
+.zip-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.zip-btn[hidden] {
+  display: none;
+}
+
+.history-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  body {
+    padding: 1rem 0.75rem 9.5rem;
+  }
+
+  .hero-card,
+  .card {
+    padding: 1rem;
+  }
+
+  .actions button,
+  .zip-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .history-card-row {
+    flex-wrap: wrap;
+  }
+
+  .history-item-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
