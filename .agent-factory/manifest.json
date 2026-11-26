@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "project_id": "quiero-una-aplicacion-web-local-en-python-interfaz",
+  "title": "Descargador de Música YouTube",
+  "app_type": "python_local",
+  "objective": "Quiero una aplicación web local en Python (interfaz minimalista en el navegador) para descargar mi música de YouTube usando yt-dlp y guardarla directamente en una carpeta local de mi computadora, con mis playlists ordenadas y la portada incrustada en cada canción.\n\nFuncionalidades principales:\n1. Interfaz web local (127.0.0.1): Un campo para pegar el enlace de una playlist o canción de YouTube, selector de carpeta de destino local (por defecto en la carpeta Música del usuario) y botón para iniciar la descarga.\n2. Playlists ordenadas: Debe crear una subcarpeta por cada playlist y nombrar cada archivo con su número de pista para conservar el orden exacto (ejemplo: \"Nombre de la Playlist/01 - Título de la canción.mp3\").\n3. Portadas y metadatos: Debe descargar e incrustar automáticamente la imagen de portada (thumbnail) y los metadatos (título, artista/canal, álbum/playlist) dentro de cada archivo de audio (MP3 o M4A).\n4. Historial y progreso en vivo: Mostrar en la pantalla qué canción se está descargando, su portada en miniatura, el avance de la playlist y llevar un registro local (archivo archive) para no volver a descargar canciones que ya tengo.\n5. Arquitectura verificable: Backend limpio en Python con pruebas unitarias en pytest que simulen (mock) las llamadas a yt-dlp para que las pruebas corran rápido y sin depender de conexión a internet.",
+  "plan_summary": "Aplicación web local en Python (Flask + Waitress en 127.0.0.1) con interfaz HTML/JS vanilla minimalista para descargar canciones y playlists de YouTube usando yt-dlp y ffmpeg. Reconcilia la simplicidad de un monolito local sin base de datos ni bundler con una arquitectura ligera de puertos y adaptadores, cola serializada por job_id, staging atómico, SSE con snapshot/heartbeats y endurecimiento local (CSRF y validación Host/Origin).",
+  "repo_url": "https://github.com/gabriel-castillo-2004/quiero-una-aplicacion-web-local-en-python-interfaz",
+  "deploy_url": "",
+  "updated_at": "2026-11-26T03:51:15.190263+00:00"
+}

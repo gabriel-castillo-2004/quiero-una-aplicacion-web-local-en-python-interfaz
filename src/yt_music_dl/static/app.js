@@ -55,6 +55,49 @@ globalAudio.preload = 'metadata';
 
 const HISTORY_STORAGE_KEY = 'yt_music_dl_history_v2';
 const RECENT_DIRS_KEY = 'yt_music_dl_recent_dirs_v1';
+const FALLBACK_IMAGE_DATA_URI =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' +
+      '<rect width="64" height="64" rx="10" fill="#121620"/>' +
+      '<path d="M27 42V20l18-3v20" fill="none" stroke="#8b5cf6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="23" cy="43" r="4.5" fill="none" stroke="#06b6d4" stroke-width="3"/>' +
+      '<circle cx="41" cy="39" r="4.5" fill="none" stroke="#06b6d4" stroke-width="3"/>' +
+      '</svg>'
+  );
+
+function attachImageFallback(img) {
+  if (!img) return;
+  const applyFallback = () => {
+    if (img.dataset.fallbackApplied === '1') return;
+    img.dataset.fallbackApplied = '1';
+    img.classList.add('is-fallback');
+    img.src = FALLBACK_IMAGE_DATA_URI;
+  };
+  img.addEventListener('error', applyFallback);
+  if (!img.getAttribute('src')) {
+    applyFallback();
+  } else if (img.complete && img.naturalWidth === 0) {
+    applyFallback();
+  }
+}
+
+function setImageSource(img, url) {
+  if (!img) return;
+  if (url) {
+    img.dataset.fallbackApplied = '';
+    img.classList.remove('is-fallback');
+    img.src = url;
+  } else {
+    img.dataset.fallbackApplied = '1';
+    img.classList.add('is-fallback');
+    img.src = FALLBACK_IMAGE_DATA_URI;
+  }
+}
+
+attachImageFallback(previewThumb);
+attachImageFallback(trackThumb);
+attachImageFallback(playerThumb);
 
 let currentJobId = null;
 let currentJobMeta = null;
@@ -222,13 +265,12 @@ function renderHistory() {
     const row = document.createElement('div');
     row.className = 'history-card-row';
 
-    if (item.thumbnail_url) {
-      const img = document.createElement('img');
-      img.className = 'history-thumb';
-      img.src = item.thumbnail_url;
-      img.alt = item.title || 'Portada';
-      row.appendChild(img);
-    }
+    const img = document.createElement('img');
+    img.className = 'history-thumb';
+    img.alt = item.title || 'Portada';
+    attachImageFallback(img);
+    setImageSource(img, item.thumbnail_url || '');
+    row.appendChild(img);
 
     const details = document.createElement('div');
     details.className = 'history-details';
@@ -303,12 +345,8 @@ function playTrackAtIndex(idx) {
   if (playerTitle) playerTitle.textContent = track.title || 'Sin título';
   if (playerArtist) playerArtist.textContent = track.author || track.playlist_title || 'Descarga local';
   if (playerThumb) {
-    if (track.thumbnail_url) {
-      playerThumb.src = track.thumbnail_url;
-      playerThumb.style.display = 'block';
-    } else {
-      playerThumb.style.display = 'none';
-    }
+    setImageSource(playerThumb, track.thumbnail_url || '');
+    playerThumb.style.display = 'block';
   }
   updatePlayerButtons();
   renderHistory();
@@ -414,8 +452,9 @@ function renderPreviewTracks(tracks) {
     if (thumbUrl) {
       const img = document.createElement('img');
       img.className = 'preview-track-thumb';
-      img.src = thumbUrl;
       img.alt = '';
+      attachImageFallback(img);
+      setImageSource(img, thumbUrl);
       label.appendChild(img);
     }
 
@@ -572,12 +611,8 @@ async function fetchPreview(url) {
     previewType.textContent = data.is_playlist ? 'Playlist' : 'Canción';
     const count = Number(data.track_count || 1);
     previewCount.textContent = count === 1 ? '1 pista' : `${count} pistas`;
-    if (data.thumbnail || data.thumbnail_url) {
-      previewThumb.src = data.thumbnail || data.thumbnail_url;
-      previewThumb.style.display = 'block';
-    } else {
-      previewThumb.style.display = 'none';
-    }
+    setImageSource(previewThumb, data.thumbnail || data.thumbnail_url || '');
+    previewThumb.style.display = 'block';
     renderPreviewTracks(data.tracks || []);
     previewCard.classList.remove('is-loading');
     previewCard.classList.add('visible');
@@ -694,8 +729,10 @@ function applySnapshot(data) {
     updateLiveQueueForProgress(data.current_track);
   }
   if (data.thumbnail_url) {
-    trackThumb.src = data.thumbnail_url;
+    setImageSource(trackThumb, data.thumbnail_url);
     trackThumb.style.display = 'block';
+  } else if (!trackThumb.getAttribute('src')) {
+    setImageSource(trackThumb, '');
   }
 
   const terminal = ['completed', 'failed', 'cancelled'].includes(status);
