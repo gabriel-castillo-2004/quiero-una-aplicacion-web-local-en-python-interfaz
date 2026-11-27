@@ -368,3 +368,317 @@ def test_ui_exposes_concurrency_selector_for_1_to_3_workers(tmp_path: Path) -> N
     finally:
         manager.shutdown()
 
+
+def test_concurrent_jobs_publish_isolated_events_to_event_bus(tmp_path: Path) -> None:
+    """Concurrent workers safely publish isolated progress and completion events."""
+    import threading
+
+    from yt_music_dl.models import DownloadManifest, ProgressSnapshot, TrackResult
+
+    barrier = threading.Barrier(3, timeout=3.0)
+
+    class _ConcurrentEventDownloader:
+        def download(
+            self,
+            request: DownloadRequest,
+            staging_dir: Path,
+            archive_path: Path,
+            on_progress: Any,
+            is_cancelled: Any,
+        ) -> DownloadManifest:
+            vid = request.url.split("=")[-1]
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            on_progress(
+                ProgressSnapshot(
+                    job_id="",
+                    status="downloading",
+                    progress=45.0,
+                    current_track=f"Track-{vid}",
+                    message=f"Downloading {vid}",
+                )
+            )
+            out_file = staging_dir / f"{vid}.mp3"
+            out_file.write_bytes(b"audio-bytes")
+            return DownloadManifest(
+                downloaded=(vid,),
+                tracks=(TrackResult(track_id=vid, title=f"Track-{vid}", status="downloaded"),),
+            )
+
+    fs = LocalFileSystemAdapter()
+    event_bus = InMemoryEventBus()
+    manager = JobManager(
+        downloader=_ConcurrentEventDownloader(),
+        fs=fs,
+        event_bus=event_bus,
+        staging_root=tmp_path / "staging",
+        max_workers=3,
+    )
+    try:
+        dest_dir = tmp_path / "music"
+        dest_dir.mkdir()
+        jobs = [
+            manager.submit_job(
+                DownloadRequest(
+                    url=f"https://www.youtube.com/watch?v=conc{i:02d}aaaaa",
+                    dest_dir=dest_dir,
+                    audio_format="mp3",
+                    quality="192",
+                    concurrency=3,
+                )
+            )
+            for i in range(3)
+        ]
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if all(
+                (s := manager.get_job(j.job_id)) is not None and s.status == "completed"
+                for j in jobs
+            ):
+                break
+            time.sleep(0.02)
+
+        for job in jobs:
+            state = manager.get_job(job.job_id)
+            assert state is not None and state.status == "completed"
+            snapshot, history, q = event_bus.subscribe_with_snapshot(job.job_id)
+            event_bus.unsubscribe(job.job_id, q)
+            assert snapshot is not None
+            assert snapshot["job_id"] == job.job_id
+            assert snapshot["status"] == "completed"
+            assert all(ev["data"]["job_id"] == job.job_id for ev in history)
+            vid = job.request.url.split("=")[-1]
+            assert any(
+                ev["event"] == "progress" and ev["data"].get("current_track") == f"Track-{vid}"
+                for ev in history
+            )
+    finally:
+        manager.shutdown()
+
+
+def test_api_jobs_validates_concurrency_and_skip_duplicates(tmp_path: Path) -> None:
+    """POST /api/jobs validates concurrency (1..3) and forwards skip_duplicates."""
+    from yt_music_dl.models import DownloadManifest
+
+    recorded_requests: list[DownloadRequest] = []
+
+    class _CaptureDownloader:
+        def download(
+            self,
+            request: DownloadRequest,
+            staging_dir: Path,
+            archive_path: Path,
+            on_progress: Any,
+            is_cancelled: Any,
+        ) -> DownloadManifest:
+            recorded_requests.append(request)
+            (staging_dir / "track.mp3").write_bytes(b"audio")
+            return DownloadManifest(downloaded=("dQw4w9WgXcQ",))
+
+    app, manager = _build_test_app(tmp_path, downloader=_CaptureDownloader())
+    dest_dir = tmp_path / "music"
+    dest_dir.mkdir()
+    try:
+        client = app.test_client()
+        headers = {"X-CSRF-Token": "test-csrf-token"}
+
+        for invalid in (0, 4, True, "2"):
+            bad_resp = client.post(
+                "/api/jobs",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "format": "mp3",
+                    "quality": "192",
+                    "dest_dir": str(dest_dir),
+                    "concurrency": invalid,
+                },
+                headers=headers,
+            )
+            assert bad_resp.status_code == 400
+
+        ok_skip = client.post(
+            "/api/jobs",
+            json={
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "format": "mp3",
+                "quality": "192",
+                "dest_dir": str(dest_dir),
+                "concurrency": 3,
+                "skip_duplicates": True,
+            },
+            headers=headers,
+        )
+        assert ok_skip.status_code == 201
+
+        ok_force = client.post(
+            "/api/jobs",
+            json={
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "format": "mp3",
+                "quality": "192",
+                "dest_dir": str(dest_dir),
+                "concurrency": 1,
+                "skip_duplicates": False,
+            },
+            headers=headers,
+        )
+        assert ok_force.status_code == 201
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and len(recorded_requests) < 2:
+            time.sleep(0.02)
+
+        assert len(recorded_requests) == 2
+        by_conc = {r.concurrency: r for r in recorded_requests}
+        assert by_conc[3].skip_duplicates is True
+        assert by_conc[1].skip_duplicates is False
+    finally:
+        manager.shutdown()
+
+
+def test_duplicate_skipping_and_force_redownload_via_sqlite_store(tmp_path: Path) -> None:
+    """SqlitePersistenceAdapter + JobManager skip duplicates when enabled and redownload when disabled."""
+    from yt_music_dl.adapters.sqlite_adapter import SqlitePersistenceAdapter
+    from yt_music_dl.models import DownloadManifest, TrackResult
+
+    class _ArchiveAwareDownloader:
+        def __init__(self, tracks: list[tuple[str, str]]) -> None:
+            self.tracks = tracks
+
+        def download(
+            self,
+            request: DownloadRequest,
+            staging_dir: Path,
+            archive_path: Path,
+            on_progress: Any,
+            is_cancelled: Any,
+        ) -> DownloadManifest:
+            archived: set[str] = set()
+            if archive_path.is_file():
+                for line in archive_path.read_text(encoding="utf-8").splitlines():
+                    parts = line.strip().split()
+                    if parts:
+                        archived.add(parts[-1])
+
+            downloaded: list[str] = []
+            skipped: list[str] = []
+            results: list[TrackResult] = []
+            for idx, (vid, title) in enumerate(self.tracks, start=1):
+                if vid in archived:
+                    skipped.append(vid)
+                    results.append(
+                        TrackResult(track_id=vid, title=title, status="skipped", reason="Already in archive")
+                    )
+                    continue
+                out_file = staging_dir / f"{idx:02d} - {title}.mp3"
+                out_file.write_bytes(b"audio-data")
+                downloaded.append(vid)
+                results.append(
+                    TrackResult(track_id=vid, title=title, status="downloaded", file_path=str(out_file))
+                )
+            return DownloadManifest(
+                downloaded=tuple(downloaded),
+                skipped_archive=tuple(skipped),
+                tracks=tuple(results),
+            )
+
+    store = SqlitePersistenceAdapter(tmp_path / "state.db")
+    downloader = _ArchiveAwareDownloader([("vidDup1", "First Song"), ("vidNew2", "Second Song")])
+    manager = JobManager(
+        downloader=downloader,
+        fs=LocalFileSystemAdapter(),
+        event_bus=InMemoryEventBus(),
+        staging_root=tmp_path / "staging",
+        store=store,
+        max_workers=2,
+    )
+    try:
+        dest1 = tmp_path / "music1"
+        dest1.mkdir()
+        job1 = manager.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/playlist?list=PLdupA",
+                dest_dir=dest1,
+                audio_format="mp3",
+                is_playlist=True,
+                quality="192",
+                skip_duplicates=False,
+            )
+        )
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            s1 = manager.get_job(job1.job_id)
+            if s1 is not None and s1.status == "completed":
+                break
+            time.sleep(0.02)
+        assert {"vidDup1", "vidNew2"}.issubset(store.get_downloaded_ids())
+
+        # New destination with skip_duplicates=True should seed archive.txt from store and skip both
+        dest2 = tmp_path / "music2"
+        dest2.mkdir()
+        job2 = manager.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/playlist?list=PLdupB",
+                dest_dir=dest2,
+                audio_format="mp3",
+                is_playlist=True,
+                quality="192",
+                skip_duplicates=True,
+            )
+        )
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            s2 = manager.get_job(job2.job_id)
+            if s2 is not None and s2.status == "completed":
+                break
+            time.sleep(0.02)
+        s2 = manager.get_job(job2.job_id)
+        assert s2 is not None and s2.manifest is not None
+        assert s2.manifest.downloaded == ()
+        assert set(s2.manifest.skipped_archive) == {"vidDup1", "vidNew2"}
+
+        # Force redownload (skip_duplicates=False) in a clean destination must NOT seed archive.txt
+        dest3 = tmp_path / "music3"
+        dest3.mkdir()
+        job3 = manager.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/playlist?list=PLdupC",
+                dest_dir=dest3,
+                audio_format="mp3",
+                is_playlist=True,
+                quality="192",
+                skip_duplicates=False,
+            )
+        )
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            s3 = manager.get_job(job3.job_id)
+            if s3 is not None and s3.status == "completed":
+                break
+            time.sleep(0.02)
+        s3 = manager.get_job(job3.job_id)
+        assert s3 is not None and s3.manifest is not None
+        assert set(s3.manifest.downloaded) == {"vidDup1", "vidNew2"}
+        assert s3.manifest.skipped_archive == ()
+    finally:
+        manager.shutdown()
+
+
+def test_ui_exposes_skip_duplicates_checkbox_and_wiring(tmp_path: Path) -> None:
+    """Frontend HTML and JS expose the duplicate-skipping toggle."""
+    app, manager = _build_test_app(tmp_path, downloader=YtDlpAdapter())
+    try:
+        client = app.test_client()
+        html = client.get("/").get_data(as_text=True)
+        app_js = client.get("/static/app.js").get_data(as_text=True)
+
+        assert 'id="skip-duplicates-checkbox"' in html
+        assert 'name="skip_duplicates"' in html
+        assert "skip-duplicates-checkbox" in app_js
+        assert "skip_duplicates" in app_js
+    finally:
+        manager.shutdown()
+
