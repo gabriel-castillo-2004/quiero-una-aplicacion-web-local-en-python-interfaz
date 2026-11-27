@@ -51,6 +51,7 @@ class JobManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._shutdown_called = False
+        self._shutdown_event = threading.Event()
 
         if self._store is not None:
             for persisted in self._store.load_jobs():
@@ -73,6 +74,7 @@ class JobManager:
         for idx in range(self._max_workers):
             worker = threading.Thread(
                 target=self._worker_loop,
+                args=(idx,),
                 name=f"yt-music-dl-worker-{idx + 1}",
                 daemon=True,
             )
@@ -156,12 +158,15 @@ class JobManager:
             if self._shutdown_called:
                 return
             self._shutdown_called = True
+        self._shutdown_event.set()
         for _ in self._workers:
             self._queue.put(None)
         for worker in self._workers:
             worker.join(timeout=timeout)
 
-    def _worker_loop(self) -> None:
+    def _worker_loop(self, worker_idx: int = 0) -> None:
+        if worker_idx > 0 and self._shutdown_event.wait(timeout=worker_idx * 1.5):
+            return
         while True:
             job_id = self._queue.get()
             if job_id is None:

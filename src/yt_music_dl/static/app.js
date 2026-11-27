@@ -767,10 +767,22 @@ function renderLiveTrackQueue() {
     const actions = document.createElement('div');
     actions.className = 'live-queue-actions';
 
+    const statusCol = document.createElement('div');
+    statusCol.className = 'live-queue-status-col';
+
     const badge = document.createElement('span');
     badge.className = `badge ${item.badgeClass || ''}`;
     badge.textContent = item.label;
-    actions.appendChild(badge);
+    statusCol.appendChild(badge);
+
+    if (item.status === 'failed' && item.reason) {
+      const errDetail = document.createElement('span');
+      errDetail.className = 'live-queue-error';
+      errDetail.textContent = item.reason;
+      statusCol.appendChild(errDetail);
+    }
+
+    actions.appendChild(statusCol);
 
     if (item.status === 'failed' && item.retryPayload) {
       const retryBtn = document.createElement('button');
@@ -808,20 +820,64 @@ function updateLiveQueueForProgress(currentTrackName) {
 function finalizeLiveQueueFromManifest(manifest, retryBasePayload) {
   const tracks = (manifest && manifest.tracks) || [];
   if (tracks.length === 0) return;
-  queueTracksState = tracks.map((t) => {
+  const previousQueue = Array.isArray(queueTracksState) ? queueTracksState : [];
+  queueTracksState = tracks.map((t, idx) => {
+    const prev =
+      previousQueue.find((item) => item.id && t.track_id && item.id === t.track_id) ||
+      previousQueue[idx] ||
+      null;
+    const isSyntheticTitle = !t.title || /^(entry|track)-\d+$/i.test(String(t.title).trim());
+    const resolvedTitle =
+      isSyntheticTitle && prev && prev.title
+        ? prev.title
+        : (prev && prev.rawTitle && t.title === prev.rawTitle ? prev.title : (t.title || (prev && prev.title) || `Pista ${idx + 1}`));
+    const resolvedRawTitle =
+      isSyntheticTitle && prev && prev.rawTitle
+        ? prev.rawTitle
+        : (t.title || (prev && prev.rawTitle) || resolvedTitle);
+    const trackUrl = t.url || (prev && prev.url) || '';
+
     if (t.status === 'downloaded') {
-      return { title: t.title, rawTitle: t.title, status: 'completed', label: 'Completada', badgeClass: 'completed' };
+      return {
+        id: t.track_id || (prev && prev.id),
+        url: trackUrl,
+        title: resolvedTitle,
+        rawTitle: resolvedRawTitle,
+        status: 'completed',
+        label: 'Completada',
+        badgeClass: 'completed',
+      };
     }
     if (t.status === 'skipped') {
-      return { title: t.title, rawTitle: t.title, status: 'skipped', label: 'Ya descargada/omitida', badgeClass: '' };
+      return {
+        id: t.track_id || (prev && prev.id),
+        url: trackUrl,
+        title: resolvedTitle,
+        rawTitle: resolvedRawTitle,
+        status: 'skipped',
+        label: 'Ya descargada/omitida',
+        badgeClass: '',
+      };
     }
+    const perTrackRetry =
+      retryBasePayload && trackUrl
+        ? {
+            ...retryBasePayload,
+            url: trackUrl,
+            selected_tracks: undefined,
+            tracks: [{ index: 1, id: t.track_id || (prev && prev.id), title: resolvedRawTitle, url: trackUrl }],
+          }
+        : retryBasePayload;
     return {
-      title: t.title,
-      rawTitle: t.title,
+      id: t.track_id || (prev && prev.id),
+      url: trackUrl,
+      title: resolvedTitle,
+      rawTitle: resolvedRawTitle,
       status: 'failed',
-      label: 'Error',
+      label: 'ERROR',
       badgeClass: 'failed',
-      retryPayload: retryBasePayload,
+      reason: t.reason || '',
+      retryPayload: perTrackRetry,
     };
   });
   renderLiveTrackQueue();
@@ -1226,6 +1282,9 @@ async function submitDownloadJob(requestPayload) {
       queueTracksState = previewTracks
         .filter((t) => !selectedSet || selectedSet.has(t.index))
         .map((t) => ({
+          id: t.id || '',
+          index: t.index,
+          url: t.url || (t.id ? `https://www.youtube.com/watch?v=${t.id}` : ''),
           title: `${String(t.index).padStart(2, '0')} - ${t.title}`,
           rawTitle: t.title,
           status: 'queued',
@@ -1235,6 +1294,8 @@ async function submitDownloadJob(requestPayload) {
     } else {
       queueTracksState = [
         {
+          id: '',
+          url: requestPayload.url,
           title: (currentPreview && currentPreview.title) || requestPayload.url,
           rawTitle: (currentPreview && currentPreview.title) || requestPayload.url,
           status: 'queued',
@@ -1575,6 +1636,17 @@ form.addEventListener('submit', async (e) => {
   };
   if (Array.isArray(selectedTracks) && selectedTracks.length > 0) {
     payload.selected_tracks = selectedTracks;
+  }
+  if (currentPreview && Array.isArray(currentPreview.tracks) && currentPreview.tracks.length > 0) {
+    const selectedSet = Array.isArray(selectedTracks) ? new Set(selectedTracks) : null;
+    payload.tracks = currentPreview.tracks
+      .filter((t) => !selectedSet || selectedSet.has(t.index))
+      .map((t) => ({
+        index: t.index,
+        id: t.id || '',
+        title: t.title || '',
+        url: t.url || (t.id ? `https://www.youtube.com/watch?v=${t.id}` : ''),
+      }));
   }
   await submitDownloadJob(payload);
 });
