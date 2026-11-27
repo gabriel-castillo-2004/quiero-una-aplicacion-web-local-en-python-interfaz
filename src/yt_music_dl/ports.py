@@ -99,10 +99,12 @@ class PersistencePort(Protocol):
         """Load a single persisted job by ID, or None if not found."""
         ...
 
-    def record_downloaded_ids(self, video_ids: Iterable[str]) -> None:
-        """Record one or more video IDs as already downloaded."""
+    def record_downloaded_ids(
+        self, video_ids: Iterable[str], audio_format: str | None = None
+    ) -> None:
+        """Record one or more video IDs as already downloaded (optionally scoped by format)."""
         ...
 
-    def get_downloaded_ids(self) -> set[str]:
-        """Return the set of all previously downloaded video IDs."""
+    def get_downloaded_ids(self, audio_format: str | None = None) -> set[str]:
+        """Return the set of previously downloaded video IDs (optionally filtered by format)."""
         ...

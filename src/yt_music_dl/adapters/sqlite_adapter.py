@@ -58,6 +58,16 @@ class SqlitePersistenceAdapter:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS downloaded_tracks (
+                    video_id TEXT NOT NULL,
+                    audio_format TEXT NOT NULL DEFAULT '',
+                    downloaded_at REAL NOT NULL,
+                    PRIMARY KEY (video_id, audio_format)
+                )
+                """
+            )
             conn.commit()
 
     def save_job(self, job: JobState) -> None:
@@ -129,9 +139,13 @@ class SqlitePersistenceAdapter:
             ).fetchone()
         return self._row_to_job(row) if row is not None else None
 
-    def record_downloaded_ids(self, video_ids: Iterable[str]) -> None:
-        """Record downloaded video IDs for duplicate skipping across restarts."""
-        clean_ids = [(vid.strip(), time.time()) for vid in video_ids if vid and vid.strip()]
+    def record_downloaded_ids(
+        self, video_ids: Iterable[str], audio_format: str | None = None
+    ) -> None:
+        """Record downloaded video IDs (scoped by audio_format) for duplicate skipping."""
+        now = time.time()
+        fmt = (audio_format or "").strip().lower()
+        clean_ids = [vid.strip() for vid in video_ids if vid and vid.strip()]
         if not clean_ids:
             return
         with self._lock, self._connect() as conn:
@@ -140,14 +154,34 @@ class SqlitePersistenceAdapter:
                 INSERT OR IGNORE INTO downloaded_videos (video_id, downloaded_at)
                 VALUES (?, ?)
                 """,
-                clean_ids,
+                [(vid, now) for vid in clean_ids],
+            )
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO downloaded_tracks (video_id, audio_format, downloaded_at)
+                VALUES (?, ?, ?)
+                """,
+                [(vid, fmt, now) for vid in clean_ids],
             )
             conn.commit()
 
-    def get_downloaded_ids(self) -> set[str]:
-        """Return all previously recorded downloaded video IDs."""
+    def get_downloaded_ids(self, audio_format: str | None = None) -> set[str]:
+        """Return downloaded video IDs, optionally filtered by audio_format."""
         with self._lock, self._connect() as conn:
-            rows = conn.execute("SELECT video_id FROM downloaded_videos").fetchall()
+            if audio_format is None:
+                rows = conn.execute(
+                    """
+                    SELECT video_id FROM downloaded_tracks
+                    UNION
+                    SELECT video_id FROM downloaded_videos
+                    """
+                ).fetchall()
+            else:
+                fmt = audio_format.strip().lower()
+                rows = conn.execute(
+                    "SELECT video_id FROM downloaded_tracks WHERE audio_format = ?",
+                    (fmt,),
+                ).fetchall()
         return {str(row["video_id"]) for row in rows}
 
     def _row_to_job(self, row: sqlite3.Row) -> JobState:

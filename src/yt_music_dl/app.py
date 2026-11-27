@@ -148,6 +148,7 @@ def create_app(
     app = Flask(__name__, template_folder="templates")
     token = csrf_token or secrets.token_hex(24)
     app.config["CSRF_TOKEN"] = token
+    preview_adapter = YtDlpAdapter()
 
     def _run_startup_preflight() -> dict[str, Any]:
         ffmpeg_info = preflight.check_ffmpeg()
@@ -386,16 +387,31 @@ def create_app(
     def preview_url() -> tuple[Response, int]:
         payload: dict[str, Any] = request.get_json(silent=True) or {}
         raw_url = payload.get("url", "")
+        raw_format = str(payload.get("format", "mp3")).strip().lower()
+        refresh = bool(payload.get("refresh", False))
         try:
             clean_url = validate_youtube_url(raw_url)
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        adapter = YtDlpAdapter()
         try:
-            metadata = adapter.preview(clean_url)
+            metadata = preview_adapter.preview(clean_url, refresh=refresh)
         except Exception as exc:
             return jsonify({"error": f"No se pudo obtener la vista previa: {exc}"}), 422
+
+        get_ids_fn = getattr(job_manager, "get_downloaded_ids", None)
+        known_ids: set[str] = (
+            get_ids_fn(audio_format=raw_format) if callable(get_ids_fn) else set()
+        )
+        tracks = metadata.get("tracks")
+        if isinstance(tracks, list):
+            for track in tracks:
+                if isinstance(track, dict):
+                    tid = track.get("id")
+                    track["already_downloaded"] = bool(tid and str(tid) in known_ids)
+        if metadata.get("id"):
+            metadata["already_downloaded"] = str(metadata["id"]) in known_ids
+
         resp = jsonify(metadata)
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return resp, 200

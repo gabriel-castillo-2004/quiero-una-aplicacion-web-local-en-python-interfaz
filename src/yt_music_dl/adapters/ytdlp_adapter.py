@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+import copy
 from pathlib import Path
 from typing import Any, Callable
 import re
 import shutil
+import threading
 import time
 
 from yt_music_dl.models import (
@@ -291,10 +294,16 @@ class YtDlpAdapter:
         *,
         max_retries: int = 3,
         backoff_base: float = 1.0,
+        preview_cache_ttl: float = 300.0,
+        preview_cache_max_entries: int = 128,
     ) -> None:
         self._ydl_factory = ydl_factory or _default_ydl_factory
         self._max_retries = max(0, int(max_retries))
         self._backoff_base = max(0.01, float(backoff_base))
+        self._preview_cache_ttl = max(0.0, float(preview_cache_ttl))
+        self._preview_cache_max_entries = max(0, int(preview_cache_max_entries))
+        self._preview_cache_lock = threading.Lock()
+        self._preview_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 
     def download(
         self,
@@ -498,9 +507,26 @@ class YtDlpAdapter:
             tracks=tuple(tracks),
         )
 
-    def preview(self, url: str) -> dict[str, Any]:
-        """Extract metadata for a YouTube video or playlist without downloading."""
+    def preview(self, url: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Extract metadata for a YouTube video or playlist without downloading.
+
+        Results are cached in memory for ``preview_cache_ttl`` seconds (up to
+        ``preview_cache_max_entries`` entries) unless ``refresh=True`` is passed.
+        """
         target_url = normalize_youtube_url(url)
+        cache_enabled = self._preview_cache_ttl > 0 and self._preview_cache_max_entries > 0
+
+        if cache_enabled and not refresh:
+            now = time.monotonic()
+            with self._preview_cache_lock:
+                cached = self._preview_cache.get(target_url)
+                if cached is not None:
+                    cached_at, cached_payload = cached
+                    if (now - cached_at) < self._preview_cache_ttl:
+                        self._preview_cache.move_to_end(target_url)
+                        return copy.deepcopy(cached_payload)
+                    del self._preview_cache[target_url]
+
         opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -576,7 +602,8 @@ class YtDlpAdapter:
                     }
                 )
 
-        return {
+        result: dict[str, Any] = {
+            "id": info.get("id"),
             "title": title,
             "author": author,
             "channel": author,
@@ -588,6 +615,17 @@ class YtDlpAdapter:
             "duration": info.get("duration"),
             "tracks": tracks,
         }
+
+        if cache_enabled:
+            now = time.monotonic()
+            with self._preview_cache_lock:
+                if target_url in self._preview_cache:
+                    del self._preview_cache[target_url]
+                self._preview_cache[target_url] = (now, copy.deepcopy(result))
+                while len(self._preview_cache) > self._preview_cache_max_entries:
+                    self._preview_cache.popitem(last=False)
+
+        return result
 
     @staticmethod
     def _read_archive_ids(archive_path: Path) -> set[str]:

@@ -25,6 +25,8 @@ const previewLoading = document.getElementById('preview-loading');
 const previewThumb = document.getElementById('preview-thumb');
 const previewType = document.getElementById('preview-type');
 const previewCount = document.getElementById('preview-count');
+const previewAlreadyDownloaded = document.getElementById('preview-already-downloaded');
+const previewRefreshBtn = document.getElementById('preview-refresh-btn');
 const previewTitle = document.getElementById('preview-title');
 const previewAuthor = document.getElementById('preview-author');
 const trackSelectorDetails = document.getElementById('track-selector-details');
@@ -711,6 +713,14 @@ function renderPreviewTracks(tracks) {
     span.textContent = `${String(track.index).padStart(2, '0')} - ${track.title || 'Sin título'}`;
     label.appendChild(span);
 
+    if (track.already_downloaded) {
+      li.classList.add('is-already-downloaded');
+      const dupBadge = document.createElement('span');
+      dupBadge.className = 'badge badge-downloaded';
+      dupBadge.textContent = 'Ya descargada';
+      label.appendChild(dupBadge);
+    }
+
     const dur = formatDuration(track.duration);
     if (dur) {
       const durEl = document.createElement('span');
@@ -883,13 +893,15 @@ function finalizeLiveQueueFromManifest(manifest, retryBasePayload) {
   renderLiveTrackQueue();
 }
 
-async function fetchPreview(url) {
+async function fetchPreview(url, options = {}) {
+  const { refresh = false } = options;
   if (previewAbortController) {
     previewAbortController.abort();
     previewAbortController = null;
   }
   if (!url || !/^https?:\/\//i.test(url)) {
     if (previewLoading) previewLoading.hidden = true;
+    if (previewAlreadyDownloaded) previewAlreadyDownloaded.hidden = true;
     previewCard.classList.remove('visible', 'is-loading');
     previewCard.removeAttribute('aria-busy');
     currentPreview = null;
@@ -903,6 +915,7 @@ async function fetchPreview(url) {
   previewCard.setAttribute('aria-busy', 'true');
   try {
     const cacheBust = Date.now();
+    const { format } = parseFormatQuality();
     const res = await fetch(`/api/preview?_t=${cacheBust}`, {
       method: 'POST',
       cache: 'no-store',
@@ -911,7 +924,7 @@ async function fetchPreview(url) {
         'Cache-Control': 'no-cache',
         'X-CSRF-Token': csrfToken,
       },
-      body: JSON.stringify({ url, _t: cacheBust }),
+      body: JSON.stringify({ url, format, refresh: Boolean(refresh), _t: cacheBust }),
       signal,
     });
     if (!res.ok) {
@@ -920,7 +933,7 @@ async function fetchPreview(url) {
       currentPreview = null;
       renderPreviewTracks([]);
       showFormError(err.error || 'No se pudo obtener la vista previa de la URL.', {
-        onRetry: () => fetchPreview(url),
+        onRetry: () => fetchPreview(url, options),
       });
       return;
     }
@@ -932,6 +945,9 @@ async function fetchPreview(url) {
     previewType.textContent = data.is_playlist ? 'Playlist' : 'Canción';
     const count = Number(data.track_count || 1);
     previewCount.textContent = count === 1 ? '1 pista' : `${count} pistas`;
+    if (previewAlreadyDownloaded) {
+      previewAlreadyDownloaded.hidden = !(!data.is_playlist && data.already_downloaded);
+    }
     setImageSource(previewThumb, data.thumbnail || data.thumbnail_url || '');
     previewThumb.style.display = 'block';
     renderPreviewTracks(data.tracks || []);
@@ -942,7 +958,7 @@ async function fetchPreview(url) {
     previewCard.classList.remove('visible', 'is-loading');
     setBackendStatus('offline', 'Sin conexión');
     showFormError('No se pudo conectar con el servidor para obtener la vista previa.', {
-      onRetry: () => fetchPreview(url),
+      onRetry: () => fetchPreview(url, options),
     });
   } finally {
     if (previewLoading) previewLoading.hidden = true;
@@ -1584,6 +1600,24 @@ urlInput.addEventListener('input', () => {
   const val = urlInput.value.trim();
   previewTimer = setTimeout(() => fetchPreview(val), 450);
 });
+
+if (previewRefreshBtn) {
+  previewRefreshBtn.addEventListener('click', () => {
+    const val = urlInput.value.trim();
+    if (val) {
+      fetchPreview(val, { refresh: true });
+    }
+  });
+}
+
+if (formatQualitySelect) {
+  formatQualitySelect.addEventListener('change', () => {
+    const val = urlInput.value.trim();
+    if (val && currentPreview) {
+      fetchPreview(val);
+    }
+  });
+}
 
 openFolderBtn.addEventListener('click', async () => {
   clearFormError();
