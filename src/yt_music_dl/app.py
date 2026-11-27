@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import io
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -63,6 +64,28 @@ def create_app(
     app = Flask(__name__, template_folder="templates")
     token = csrf_token or secrets.token_hex(24)
     app.config["CSRF_TOKEN"] = token
+
+    def _run_startup_preflight() -> dict[str, Any]:
+        ffmpeg_info = preflight.check_ffmpeg()
+        ytdlp_checker = getattr(preflight, "check_ytdlp", None)
+        ytdlp_info = ytdlp_checker() if callable(ytdlp_checker) else _check_ytdlp_status()
+        summary = {
+            "ffmpeg": bool(ffmpeg_info.get("ffmpeg", ffmpeg_info.get("available"))),
+            "ffprobe": bool(ffmpeg_info.get("ffprobe", ffmpeg_info.get("available"))),
+            "yt_dlp": bool(ytdlp_info.get("available")),
+            "yt_dlp_in_path": bool(ytdlp_info.get("path") or shutil.which("yt-dlp")),
+        }
+        missing = [name for name in ("ffmpeg", "ffprobe") if not summary[name]]
+        if not summary["yt_dlp"]:
+            missing.append("yt-dlp")
+        if missing:
+            app.logger.warning(
+                "Dependencias faltantes al iniciar yt-music-dl: %s",
+                ", ".join(missing),
+            )
+        return summary
+
+    app.config["STARTUP_PREFLIGHT"] = _run_startup_preflight()
 
     @app.before_request
     def _enforce_local_security() -> Response | tuple[Response, int] | None:
