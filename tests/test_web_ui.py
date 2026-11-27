@@ -195,3 +195,97 @@ def test_mod_live_server_serves_real_ui_and_static_assets_without_404() -> None:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+
+
+def test_mod13_favicon_loading_states_error_regions_and_accessibility() -> None:
+    """Verify favicon.svg link, health check hook, loading states, error regions, and keyboard controls."""
+    src_root = REPO_ROOT / "src" / "yt_music_dl"
+    index_html = (src_root / "templates" / "index.html").read_text(encoding="utf-8")
+    app_js = (src_root / "static" / "app.js").read_text(encoding="utf-8")
+    styles_css = (src_root / "static" / "styles.css").read_text(encoding="utf-8")
+    favicon_svg = src_root / "static" / "favicon.svg"
+
+    assert favicon_svg.is_file() and favicon_svg.stat().st_size > 0
+    assert 'href="/static/favicon.svg"' in index_html
+    assert 'type="image/svg+xml"' in index_html
+
+    # Health endpoint usage and loading-state hooks
+    assert "/api/health" in app_js
+    assert "preview-loading" in index_html
+    assert "setButtonLoading" in app_js
+    assert "aria-busy" in app_js
+    assert ".is-loading" in styles_css
+
+    # Accessible error and live-status regions + keyboard-focusable native controls
+    assert 'id="form-error"' in index_html
+    assert 'role="status"' in index_html
+    assert 'role="alert"' in index_html
+    assert 'aria-live="polite"' in index_html
+    assert 'aria-label="' in index_html
+
+
+def test_mod13_static_favicon_and_recoverable_json_errors(tmp_path: Path) -> None:
+    """Verify /static/favicon.svg returns 200 SVG and API errors return structured JSON."""
+    src_dir = str(REPO_ROOT / "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+
+    from yt_music_dl.adapters.fs_adapter import LocalFileSystemAdapter
+    from yt_music_dl.adapters.ytdlp_adapter import YtDlpAdapter
+    from yt_music_dl.app import create_app
+    from yt_music_dl.event_bus import InMemoryEventBus
+    from yt_music_dl.job_manager import JobManager
+
+    class _FakePreflight:
+        def check_ffmpeg(self) -> dict[str, object]:
+            return {"available": True, "ffmpeg": True, "ffprobe": True}
+
+    fs = LocalFileSystemAdapter()
+    event_bus = InMemoryEventBus()
+    manager = JobManager(
+        downloader=YtDlpAdapter(),
+        fs=fs,
+        event_bus=event_bus,
+        staging_root=tmp_path / "staging",
+    )
+    app = create_app(
+        job_manager=manager,
+        event_bus=event_bus,
+        fs=fs,
+        preflight=_FakePreflight(),
+        csrf_token="test-csrf-token",
+    )
+    app.config["TESTING"] = True
+
+    try:
+        client = app.test_client()
+
+        fav_resp = client.get("/static/favicon.svg")
+        assert fav_resp.status_code == 200
+        assert "svg" in (fav_resp.content_type or "").lower()
+
+        health_resp = client.get("/api/health")
+        assert health_resp.status_code in {200, 503}
+        health_json = health_resp.get_json()
+        assert isinstance(health_json, dict)
+        assert "status" in health_json
+
+        bad_job = client.post(
+            "/api/jobs",
+            json={"url": "https://example.com/not-youtube", "dest_dir": str(tmp_path)},
+            headers={"X-CSRF-Token": "test-csrf-token"},
+        )
+        assert bad_job.status_code == 400
+        bad_job_json = bad_job.get_json()
+        assert isinstance(bad_job_json, dict) and bad_job_json.get("error")
+
+        bad_preview = client.post(
+            "/api/preview",
+            json={"url": "not-a-valid-url"},
+            headers={"X-CSRF-Token": "test-csrf-token"},
+        )
+        assert bad_preview.status_code == 400
+        bad_preview_json = bad_preview.get_json()
+        assert isinstance(bad_preview_json, dict) and bad_preview_json.get("error")
+    finally:
+        manager.shutdown()
