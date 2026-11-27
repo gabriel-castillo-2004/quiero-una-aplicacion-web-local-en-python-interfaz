@@ -49,6 +49,18 @@ const historySearch = document.getElementById('history-search');
 const historyPlaylistFilter = document.getElementById('history-playlist-filter');
 const historyList = document.getElementById('history-list');
 
+const tabDownloader = document.getElementById('tab-downloader');
+const tabLibrary = document.getElementById('tab-library');
+const downloaderPanel = document.getElementById('downloader-panel');
+const historyCard = document.getElementById('history-card');
+const libraryCard = document.getElementById('library-card');
+const libraryCountBadge = document.getElementById('library-count-badge');
+const libraryDirLabel = document.getElementById('library-dir-label');
+const libraryRefreshBtn = document.getElementById('library-refresh-btn');
+const librarySearch = document.getElementById('library-search');
+const libraryFormatFilter = document.getElementById('library-format-filter');
+const libraryList = document.getElementById('library-list');
+
 const playerThumb = document.getElementById('player-thumb');
 const playerTitle = document.getElementById('player-title');
 const playerArtist = document.getElementById('player-artist');
@@ -58,7 +70,8 @@ const playerNextBtn = document.getElementById('player-next-btn');
 const playerSeek = document.getElementById('player-seek');
 const playerTime = document.getElementById('player-time');
 
-const globalAudio = document.createElement('audio');
+const globalAudio =
+  document.getElementById('global-audio-player') || document.createElement('audio');
 globalAudio.preload = 'metadata';
 
 const HISTORY_STORAGE_KEY = 'yt_music_dl_history_v2';
@@ -908,6 +921,8 @@ async function init() {
     }
   } catch (_) {}
 
+  loadLibrary();
+
   try {
     const jobsRes = await fetch('/api/jobs');
     if (jobsRes.ok) {
@@ -1342,7 +1357,157 @@ if (formatQualitySelect) {
 if (destInput) {
   destInput.addEventListener('change', () => {
     checkBackendHealth();
+    loadLibrary();
   });
+}
+
+let libraryItems = [];
+
+function switchViewTab(view) {
+  const isLibrary = view === 'library';
+  if (tabDownloader) {
+    tabDownloader.classList.toggle('is-active', !isLibrary);
+    tabDownloader.setAttribute('aria-selected', String(!isLibrary));
+  }
+  if (tabLibrary) {
+    tabLibrary.classList.toggle('is-active', isLibrary);
+    tabLibrary.setAttribute('aria-selected', String(isLibrary));
+  }
+  if (downloaderPanel) downloaderPanel.hidden = isLibrary;
+  if (historyCard) historyCard.hidden = isLibrary;
+  if (progressCard && isLibrary) {
+    progressCard.dataset.wasVisible = progressCard.classList.contains('visible') ? '1' : '';
+    progressCard.hidden = true;
+  } else if (progressCard && !isLibrary) {
+    progressCard.hidden = false;
+  }
+  if (libraryCard) libraryCard.hidden = !isLibrary;
+  if (isLibrary) {
+    loadLibrary();
+  }
+}
+
+function renderLibrary() {
+  if (!libraryList) return;
+  const q = (librarySearch ? librarySearch.value : '').trim().toLowerCase();
+  const fmt = (libraryFormatFilter ? libraryFormatFilter.value : '').trim().toLowerCase();
+  const filtered = libraryItems.filter((item) => {
+    const matchesText =
+      !q ||
+      String(item.name || '').toLowerCase().includes(q) ||
+      String(item.folder || '').toLowerCase().includes(q) ||
+      String(item.relative_path || '').toLowerCase().includes(q);
+    const matchesFmt = !fmt || String(item.format || '').toLowerCase() === fmt;
+    return matchesText && matchesFmt;
+  });
+
+  libraryList.replaceChildren();
+  if (filtered.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'sub';
+    empty.textContent =
+      libraryItems.length === 0
+        ? 'No hay archivos de audio en esta carpeta todavía.'
+        : 'No hay archivos que coincidan con el filtro.';
+    libraryList.appendChild(empty);
+    return;
+  }
+
+  const destVal = destInput ? destInput.value.trim() : '';
+  const mappedQueue = filtered.map((item) => {
+    const params = new URLSearchParams({ path: item.relative_path || item.path || item.name });
+    if (destVal) params.set('dest_dir', destVal);
+    return {
+      title: item.title || item.name,
+      author: item.folder || (item.format ? item.format.toUpperCase() : 'Audio local'),
+      playlist_title: item.folder || '',
+      thumbnail_url: '',
+      audio_url: `/api/library/audio?${params.toString()}`,
+    };
+  });
+
+  filtered.forEach((item, idx) => {
+    const li = document.createElement('li');
+    li.className = 'library-item';
+
+    const meta = document.createElement('div');
+    meta.className = 'library-item-meta';
+
+    const title = document.createElement('strong');
+    title.className = 'library-item-title';
+    title.textContent = item.title || item.name;
+    meta.appendChild(title);
+
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    const sizeKb = item.size ? `${Math.max(1, Math.round(item.size / 1024))} KB` : '';
+    const parts = [
+      item.folder || 'Raíz',
+      item.format ? item.format.toUpperCase() : '',
+      sizeKb,
+    ].filter(Boolean);
+    sub.textContent = parts.join(' · ');
+    meta.appendChild(sub);
+
+    const actions = document.createElement('div');
+    actions.className = 'library-item-actions';
+
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = (item.format || 'audio').toUpperCase();
+    actions.appendChild(badge);
+
+    const playBtn = document.createElement('button');
+    playBtn.type = 'button';
+    playBtn.className = 'btn-secondary btn-xs';
+    playBtn.textContent = 'Reproducir';
+    playBtn.addEventListener('click', () => {
+      playableQueue = mappedQueue;
+      playTrackAtIndex(idx);
+    });
+    actions.appendChild(playBtn);
+
+    li.appendChild(meta);
+    li.appendChild(actions);
+    libraryList.appendChild(li);
+  });
+}
+
+async function loadLibrary() {
+  if (!libraryList) return;
+  const destVal = destInput ? destInput.value.trim() : '';
+  const url = destVal
+    ? `/api/library?dest_dir=${encodeURIComponent(destVal)}`
+    : '/api/library';
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const data = await res.json();
+    libraryItems = Array.isArray(data.tracks) ? data.tracks : [];
+    if (libraryCountBadge) {
+      libraryCountBadge.textContent = String(libraryItems.length);
+    }
+    if (libraryDirLabel && data.directory) {
+      libraryDirLabel.textContent = data.directory;
+    }
+    renderLibrary();
+  } catch (_) {}
+}
+
+if (tabDownloader) {
+  tabDownloader.addEventListener('click', () => switchViewTab('downloader'));
+}
+if (tabLibrary) {
+  tabLibrary.addEventListener('click', () => switchViewTab('library'));
+}
+if (libraryRefreshBtn) {
+  libraryRefreshBtn.addEventListener('click', loadLibrary);
+}
+if (librarySearch) {
+  librarySearch.addEventListener('input', renderLibrary);
+}
+if (libraryFormatFilter) {
+  libraryFormatFilter.addEventListener('change', renderLibrary);
 }
 
 if (historySearch) {

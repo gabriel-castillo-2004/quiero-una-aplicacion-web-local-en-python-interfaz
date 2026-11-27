@@ -2,16 +2,15 @@
   "project_id": "quiero-una-aplicacion-web-local-en-python-interfaz",
   "round": 1,
   "files_written": [
-    "src/yt_music_dl/ports.py",
-    "src/yt_music_dl/models.py",
-    "src/yt_music_dl/adapters/sqlite_adapter.py",
-    "src/yt_music_dl/job_manager.py",
+    "src/yt_music_dl/validation.py",
+    "src/yt_music_dl/adapters/fs_adapter.py",
     "src/yt_music_dl/app.py",
     "src/yt_music_dl/templates/index.html",
-    "src/yt_music_dl/static/app.js"
+    "src/yt_music_dl/static/app.js",
+    "src/yt_music_dl/static/styles.css"
   ],
-  "tests_passed": 125,
-  "tests_total": 125,
-  "tests_hash": "4d91b637dc96b820f3305b7653e65e9b8e51298730bce57a688a2933e53ab993",
-  "updated_at": "2026-11-27T03:34:03.714380+00:00"
+  "tests_passed": 138,
+  "tests_total": 138,
+  "tests_hash": "6cd6ce838acfcf5f3304efccb828f9ca9be069e78ba163b246c7317263c5d1ce",
+  "updated_at": "2026-11-27T03:40:50.447953+00:00"
 }

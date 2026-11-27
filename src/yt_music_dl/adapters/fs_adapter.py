@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 import shutil
 import uuid
 
 from yt_music_dl.validation import sanitize_filename
+
+AUDIO_EXTENSIONS: frozenset[str] = frozenset(
+    {".mp3", ".m4a", ".opus", ".ogg", ".wav", ".flac", ".aac"}
+)
 
 
 class LocalFileSystemAdapter:
@@ -73,3 +78,48 @@ class LocalFileSystemAdapter:
     def cleanup_dir(self, path: Path) -> None:
         """Remove a staging directory tree safely."""
         shutil.rmtree(path, ignore_errors=True)
+
+    def list_audio_files(
+        self,
+        base_dir: Path,
+        extensions: frozenset[str] = AUDIO_EXTENSIONS,
+    ) -> list[dict[str, Any]]:
+        """List audio files recursively under base_dir without escaping it."""
+        if not base_dir.exists() or not base_dir.is_dir():
+            return []
+
+        base_resolved = base_dir.resolve()
+        items: list[dict[str, Any]] = []
+        for entry in base_resolved.rglob("*"):
+            if entry.name.startswith("."):
+                continue
+            try:
+                resolved = entry.resolve()
+                rel = resolved.relative_to(base_resolved)
+            except (OSError, ValueError):
+                continue
+
+            if not resolved.is_file():
+                continue
+            suffix = resolved.suffix.lower()
+            if suffix not in extensions:
+                continue
+
+            rel_posix = rel.as_posix()
+            folder = rel.parent.as_posix() if rel.parent != Path(".") else ""
+            stat = resolved.stat()
+            items.append(
+                {
+                    "name": resolved.name,
+                    "title": resolved.stem,
+                    "path": rel_posix,
+                    "relative_path": rel_posix,
+                    "format": suffix.lstrip("."),
+                    "folder": folder,
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                }
+            )
+
+        items.sort(key=lambda item: item["relative_path"].lower())
+        return items

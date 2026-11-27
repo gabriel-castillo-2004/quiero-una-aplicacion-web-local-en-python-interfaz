@@ -65,7 +65,15 @@
       </div>
     </div>
 
-    <section class="card">
+    <nav class="view-tabs" aria-label="Secciones principales">
+      <button id="tab-downloader" type="button" class="view-tab is-active" aria-selected="true">Descargas</button>
+      <button id="tab-library" type="button" class="view-tab" aria-selected="false">
+        <span>Biblioteca</span>
+        <span id="library-count-badge" class="badge">0</span>
+      </button>
+    </nav>
+
+    <section id="downloader-panel" class="card">
       <form id="download-form">
         <label class="field">
           <span class="field-label">URL de YouTube o YouTube Music (canción o playlist)</span>
@@ -204,6 +212,29 @@
       </div>
       <ul id="history-list" class="history-list"></ul>
     </section>
+
+    <section id="library-card" class="card" hidden>
+      <div class="section-header">
+        <div>
+          <h2>Biblioteca</h2>
+          <span id="library-dir-label" class="sub">Archivos de audio en la carpeta de descargas</span>
+        </div>
+        <button id="library-refresh-btn" type="button" class="btn-secondary btn-xs">Actualizar</button>
+      </div>
+      <div class="library-filters">
+        <input id="library-search" type="search" placeholder="Buscar por nombre o carpeta..." aria-label="Buscar en biblioteca" />
+        <select id="library-format-filter" aria-label="Filtrar por formato">
+          <option value="">Todos los formatos</option>
+          <option value="mp3">MP3</option>
+          <option value="m4a">M4A</option>
+          <option value="opus">OPUS</option>
+          <option value="flac">FLAC</option>
+          <option value="wav">WAV</option>
+          <option value="ogg">OGG</option>
+        </select>
+      </div>
+      <ul id="library-list" class="library-list"></ul>
+    </section>
   </main>
 
   <footer id="player-bar" class="player-bar" aria-label="Reproductor continuo">
@@ -224,6 +255,7 @@
         <input id="player-seek" type="range" min="0" max="100" value="0" step="0.1" disabled aria-label="Barra de tiempo" />
         <span id="player-time" class="player-time">0:00 / 0:00</span>
       </div>
+      <audio id="global-audio-player" class="player-audio-native" controls preload="metadata" aria-label="Reproductor HTML5"></audio>
     </div>
   </footer>
 
