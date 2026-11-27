@@ -200,7 +200,9 @@ def create_app(
             metadata = adapter.preview(clean_url)
         except Exception as exc:
             return jsonify({"error": f"No se pudo obtener la vista previa: {exc}"}), 422
-        return jsonify(metadata), 200
+        resp = jsonify(metadata)
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return resp, 200
 
     @app.post("/api/jobs")
     def create_job() -> tuple[Response, int]:

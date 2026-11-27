@@ -15,6 +15,7 @@ const backendStatusEl = document.getElementById('backend-status');
 const backendStatusText = document.getElementById('backend-status-text');
 const formError = document.getElementById('form-error');
 const ffmpegBanner = document.getElementById('ffmpeg-warning');
+const ffmpegWarningText = document.getElementById('ffmpeg-warning-text');
 
 const previewCard = document.getElementById('preview-card');
 const previewLoading = document.getElementById('preview-loading');
@@ -33,6 +34,7 @@ const progressCard = document.getElementById('progress-card');
 const trackThumb = document.getElementById('track-thumb');
 const trackTitle = document.getElementById('track-title');
 const jobStatus = document.getElementById('job-status');
+const processingEngineEl = document.getElementById('processing-engine');
 const progressBar = document.getElementById('progress-bar');
 const progressPercent = document.getElementById('progress-percent');
 const progressMsg = document.getElementById('progress-message');
@@ -58,7 +60,7 @@ globalAudio.preload = 'metadata';
 
 const HISTORY_STORAGE_KEY = 'yt_music_dl_history_v2';
 const RECENT_DIRS_KEY = 'yt_music_dl_recent_dirs_v1';
-const FALLBACK_IMAGE_DATA_URI =
+const DEFAULT_COVER_DATA_URI =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' +
@@ -69,38 +71,38 @@ const FALLBACK_IMAGE_DATA_URI =
       '</svg>'
   );
 
-function attachImageFallback(img) {
+function attachCoverErrorHandler(img) {
   if (!img) return;
-  const applyFallback = () => {
-    if (img.dataset.fallbackApplied === '1') return;
-    img.dataset.fallbackApplied = '1';
-    img.classList.add('is-fallback');
-    img.src = FALLBACK_IMAGE_DATA_URI;
+  const applyDefaultCover = () => {
+    if (img.dataset.defaultCoverApplied === '1') return;
+    img.dataset.defaultCoverApplied = '1';
+    img.classList.add('is-default-cover');
+    img.src = DEFAULT_COVER_DATA_URI;
   };
-  img.addEventListener('error', applyFallback);
+  img.addEventListener('error', applyDefaultCover);
   if (!img.getAttribute('src')) {
-    applyFallback();
+    applyDefaultCover();
   } else if (img.complete && img.naturalWidth === 0) {
-    applyFallback();
+    applyDefaultCover();
   }
 }
 
 function setImageSource(img, url) {
   if (!img) return;
   if (url) {
-    img.dataset.fallbackApplied = '';
-    img.classList.remove('is-fallback');
+    img.dataset.defaultCoverApplied = '';
+    img.classList.remove('is-default-cover');
     img.src = url;
   } else {
-    img.dataset.fallbackApplied = '1';
-    img.classList.add('is-fallback');
-    img.src = FALLBACK_IMAGE_DATA_URI;
+    img.dataset.defaultCoverApplied = '1';
+    img.classList.add('is-default-cover');
+    img.src = DEFAULT_COVER_DATA_URI;
   }
 }
 
-attachImageFallback(previewThumb);
-attachImageFallback(trackThumb);
-attachImageFallback(playerThumb);
+attachCoverErrorHandler(previewThumb);
+attachCoverErrorHandler(trackThumb);
+attachCoverErrorHandler(playerThumb);
 
 let currentJobId = null;
 let currentJobMeta = null;
@@ -212,10 +214,44 @@ function parseFormatQuality() {
   return { format: format || 'mp3', quality: quality || '192' };
 }
 
+function getProcessingEngineInfo(format) {
+  if (format === 'm4a') {
+    return {
+      label: 'Motor: yt-dlp nativo (audio original)',
+      isNative: true,
+    };
+  }
+  if (!ffmpegAvailable) {
+    return {
+      label: 'Motor alternativo: yt-dlp nativo (sin ffmpeg)',
+      isNative: true,
+    };
+  }
+  return {
+    label: 'Motor: ffmpeg / recodificación',
+    isNative: false,
+  };
+}
+
+function updateProcessingEngineBadge(format) {
+  if (!processingEngineEl) return;
+  const targetFormat = format || parseFormatQuality().format;
+  const info = getProcessingEngineInfo(targetFormat);
+  processingEngineEl.textContent = info.label;
+  processingEngineEl.classList.toggle('is-native', info.isNative);
+}
+
 function updateFfmpegWarning() {
   if (!ffmpegBanner) return;
   const { format } = parseFormatQuality();
-  if (!ffmpegAvailable && format === 'mp3') {
+  updateProcessingEngineBadge(format);
+  if (!ffmpegAvailable) {
+    if (ffmpegWarningText) {
+      ffmpegWarningText.textContent =
+        format === 'mp3'
+          ? 'ffmpeg no está disponible en el sistema. Motor alternativo activo: yt-dlp nativo (no recodifica a MP3; elige M4A · Audio original o instala ffmpeg para usar ffmpeg / recodificación).'
+          : 'ffmpeg no está disponible en el sistema. Motor activo: yt-dlp nativo (descarga directa en M4A sin recodificación).';
+    }
     ffmpegBanner.classList.add('visible');
   } else {
     ffmpegBanner.classList.remove('visible');
@@ -289,10 +325,10 @@ function updateDownloadedCounter(items) {
   downloadedCountEl.textContent = String(completedCount);
 }
 
-function parseTrackNumber(fileName, fallbackIdx) {
+function parseTrackNumber(fileName, trackIndex) {
   const match = String(fileName || '').match(/^(\d{1,3})\s*-\s*/);
   if (match) return `#${match[1].padStart(2, '0')}`;
-  return `#${String(fallbackIdx + 1).padStart(2, '0')}`;
+  return `#${String(trackIndex + 1).padStart(2, '0')}`;
 }
 
 function refreshPlaylistFilterOptions(items) {
@@ -363,7 +399,7 @@ function renderHistory() {
     const img = document.createElement('img');
     img.className = 'history-thumb';
     img.alt = item.title || 'Portada';
-    attachImageFallback(img);
+    attachCoverErrorHandler(img);
     setImageSource(img, item.thumbnail_url || '');
     row.appendChild(img);
 
@@ -560,7 +596,7 @@ function renderPreviewTracks(tracks) {
       const img = document.createElement('img');
       img.className = 'preview-track-thumb';
       img.alt = '';
-      attachImageFallback(img);
+      attachCoverErrorHandler(img);
       setImageSource(img, thumbUrl);
       label.appendChild(img);
     }
@@ -705,13 +741,16 @@ async function fetchPreview(url) {
   previewCard.classList.add('visible', 'is-loading');
   previewCard.setAttribute('aria-busy', 'true');
   try {
-    const res = await fetch('/api/preview', {
+    const cacheBust = Date.now();
+    const res = await fetch(`/api/preview?_t=${cacheBust}`, {
       method: 'POST',
+      cache: 'no-store',
       headers: {
         'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
         'X-CSRF-Token': csrfToken,
       },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, _t: cacheBust }),
       signal,
     });
     if (!res.ok) {
@@ -800,9 +839,9 @@ async function finalizeHistoryFromJob(jobId, data) {
   const promoted = (jobDetails && jobDetails.promoted_files) || data.promoted_files || [];
   const manifest = (jobDetails && jobDetails.manifest) || data.manifest;
   const tracks = (manifest && manifest.tracks) || [];
-  const { format: fallbackFmt, quality: fallbackQual } = parseFormatQuality();
-  const format = (jobDetails && jobDetails.audio_format) || fallbackFmt;
-  const quality = (jobDetails && jobDetails.quality) || fallbackQual;
+  const { format: selectedFormat, quality: selectedQuality } = parseFormatQuality();
+  const format = (jobDetails && jobDetails.audio_format) || selectedFormat;
+  const quality = (jobDetails && jobDetails.quality) || selectedQuality;
   const author = (currentJobMeta && currentJobMeta.author) || '';
   const playlistTitle = (currentJobMeta && currentJobMeta.playlist_title) || '';
   const thumb = data.thumbnail_url || (currentJobMeta && currentJobMeta.thumbnail_url) || '';
@@ -856,6 +895,8 @@ async function finalizeHistoryFromJob(jobId, data) {
 
 function applySnapshot(data) {
   progressCard.classList.add('visible');
+  const activeFormat = (currentJobMeta && currentJobMeta.requestPayload && currentJobMeta.requestPayload.format) || parseFormatQuality().format;
+  updateProcessingEngineBadge(activeFormat);
   const status = data.status || 'pending';
   jobStatus.textContent = status;
   jobStatus.className = `badge ${status}`;

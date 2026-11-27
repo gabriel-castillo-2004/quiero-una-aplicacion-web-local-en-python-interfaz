@@ -916,7 +916,47 @@ progress::-webkit-progress-value {
   .player-bar {
     grid-template-columns: 1fr;
     gap: 0.55rem;
+    padding: 0.6rem 0.85rem;
   }
+}
+
+@media (max-width: 420px) {
+  .player-bar {
+    padding: 0.5rem 0.65rem;
+    gap: 0.4rem;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  .player-thumb,
+  .player-seek-row,
+  #player-artist {
+    display: none !important;
+  }
+
+  .player-buttons {
+    justify-content: space-between;
+    gap: 0.35rem;
+  }
+
+  .player-buttons button {
+    flex: 1;
+    min-width: 0;
+    padding: 0.35rem 0.45rem;
+    font-size: 0.75rem;
+  }
+}
+
+.badge-engine {
+  color: #a5f3fc;
+  border-color: rgba(6, 182, 212, 0.45);
+  background: rgba(6, 182, 212, 0.12);
+}
+
+.badge-engine.is-native {
+  color: var(--warn-text);
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
 }
 
 .player-info {

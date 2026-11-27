@@ -59,7 +59,7 @@
         <line x1="12" y1="9" x2="12" y2="13"></line>
         <line x1="12" y1="17" x2="12.01" y2="17"></line>
       </svg>
-      <span><strong>ffmpeg</strong> no está disponible en el sistema. Para convertir a <strong>MP3</strong> necesitas instalar ffmpeg en PATH, o bien elige <strong>M4A · Audio original (sin recodificar)</strong>.</span>
+      <span id="ffmpeg-warning-text"><strong>ffmpeg</strong> no está disponible en el sistema. Motor alternativo activo: <strong>yt-dlp nativo</strong> (sin recodificación a MP3; elige <strong>M4A · Audio original</strong> o instala ffmpeg para habilitar <strong>ffmpeg / recodificación</strong>).</span>
     </div>
 
     <section class="card">
@@ -156,6 +156,7 @@
             <strong id="track-title">Preparando descarga...</strong>
             <div class="progress-subrow">
               <span id="job-status" class="badge">pending</span>
+              <span id="processing-engine" class="badge badge-engine">Motor: ffmpeg / recodificación</span>
               <span id="progress-message" class="sub"></span>
             </div>
           </div>
