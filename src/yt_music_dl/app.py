@@ -186,6 +186,7 @@ def create_app(
             return jsonify({"cancelled": True}), 200
         return jsonify({"selected_dir": str(Path(chosen))}), 200
 
+    @app.post("/api/inspect")
     @app.post("/api/preview")
     def preview_url() -> tuple[Response, int]:
         payload: dict[str, Any] = request.get_json(silent=True) or {}
