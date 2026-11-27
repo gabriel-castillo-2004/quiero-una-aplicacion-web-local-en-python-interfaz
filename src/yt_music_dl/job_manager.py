@@ -18,7 +18,9 @@ from yt_music_dl.models import (
 )
 from yt_music_dl.ports import DownloaderPort, EventBusPort, FileSystemPort
 
-AUDIO_EXTENSIONS = frozenset({".mp3", ".m4a"})
+AUDIO_EXTENSIONS = frozenset(
+    {".mp3", ".m4a", ".webm", ".opus", ".ogg", ".aac", ".flac", ".wav", ".mp4"}
+)
 
 
 class JobManager:

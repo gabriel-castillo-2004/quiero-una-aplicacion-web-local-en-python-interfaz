@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 import io
 import os
@@ -19,7 +19,7 @@ from yt_music_dl.adapters.fs_adapter import LocalFileSystemAdapter
 from yt_music_dl.adapters.ytdlp_adapter import SystemPreflightAdapter, YtDlpAdapter
 from yt_music_dl.event_bus import InMemoryEventBus
 from yt_music_dl.job_manager import JobManager
-from yt_music_dl.models import AudioFormat, DownloadRequest
+from yt_music_dl.models import ALLOWED_AUDIO_FORMATS, AudioFormat, DownloadRequest
 from yt_music_dl.ports import EventBusPort, FileSystemPort, PreflightPort
 from yt_music_dl.validation import (
     ValidationError,
@@ -215,8 +215,8 @@ def create_app(
         ).lower()
         raw_dest = payload.get("dest_dir") or str(fs.default_music_dir())
 
-        if raw_format not in {"mp3", "m4a"}:
-            return jsonify({"error": "Unsupported audio format; use 'mp3' or 'm4a'."}), 400
+        if raw_format not in ALLOWED_AUDIO_FORMATS:
+            return jsonify({"error": "Unsupported audio format; use 'mp3', 'm4a', or 'original'."}), 400
         if raw_quality not in {"320", "192", "best"}:
             return jsonify({"error": "Unsupported quality; use '320', '192', or 'best'."}), 400
 
@@ -240,7 +240,7 @@ def create_app(
             if parsed_indices:
                 selected_tracks = tuple(parsed_indices)
 
-        audio_format: AudioFormat = "mp3" if raw_format == "mp3" else "m4a"
+        audio_format: AudioFormat = cast(AudioFormat, raw_format)
         req = DownloadRequest(
             url=clean_url,
             dest_dir=dest_path,
@@ -275,7 +275,11 @@ def create_app(
         if index < 0 or index >= len(job.promoted_files):
             return jsonify({"error": "Audio file not found"}), 404
         audio_path = job.promoted_files[index]
-        if not audio_path.is_file():
+        resolved_dest = job.request.dest_dir.resolve()
+        resolved_audio = audio_path.resolve()
+        if resolved_dest not in resolved_audio.parents and resolved_audio != resolved_dest:
+            return jsonify({"error": "Audio file path escapes destination directory"}), 403
+        if not resolved_audio.is_file():
             return jsonify({"error": "Audio file missing on disk"}), 404
         as_attachment = request.args.get("download") == "1"
         if as_attachment:
