@@ -272,3 +272,76 @@ def test_local_host_header_security_rejects_non_local_hosts(
         assert resp.status_code == 403
     finally:
         manager.shutdown()
+
+
+@pytest.mark.parametrize(
+    "malicious_url",
+    [
+        "--exec=id",
+        "-o /tmp/out.mp3",
+        "https://evil.com/watch?v=dQw4w9WgXcQ",
+        "ftp://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    ],
+)
+def test_api_endpoints_reject_malicious_urls_before_invoking_ytdlp(
+    tmp_path: Path, malicious_url: str
+) -> None:
+    app, manager = _build_test_app(tmp_path)
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    try:
+        client = app.test_client()
+        headers = {"X-CSRF-Token": "security-test-csrf"}
+        with (
+            patch.object(YtDlpAdapter, "preview") as mock_preview,
+            patch.object(manager, "submit_job") as mock_submit,
+        ):
+            inspect_resp = client.post(
+                "/api/inspect",
+                json={"url": malicious_url},
+                headers=headers,
+            )
+            preview_resp = client.post(
+                "/api/preview",
+                json={"url": malicious_url},
+                headers=headers,
+            )
+            job_resp = client.post(
+                "/api/jobs",
+                json={"url": malicious_url, "format": "mp3", "dest_dir": str(dest_dir)},
+                headers=headers,
+            )
+
+        assert inspect_resp.status_code == 400
+        assert preview_resp.status_code == 400
+        assert job_resp.status_code == 400
+        mock_preview.assert_not_called()
+        mock_submit.assert_not_called()
+    finally:
+        manager.shutdown()
+
+
+def test_stream_job_audio_blocks_path_traversal_outside_dest_dir(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    app, manager = _build_test_app(tmp_path)
+    dest_dir = tmp_path / "downloads"
+    outside_dir = tmp_path / "outside"
+    dest_dir.mkdir()
+    outside_dir.mkdir()
+    outside_file = outside_dir / "secret.mp3"
+    outside_file.write_bytes(b"secret")
+
+    fake_job = SimpleNamespace(
+        job_id="job-traversal",
+        request=SimpleNamespace(dest_dir=dest_dir),
+        promoted_files=[outside_file],
+    )
+    try:
+        client = app.test_client()
+        with patch.object(manager, "get_job", return_value=fake_job):
+            resp = client.get("/api/jobs/job-traversal/audio/0")
+        assert resp.status_code == 403
+        assert "escapes" in resp.get_json()["error"]
+    finally:
+        manager.shutdown()
