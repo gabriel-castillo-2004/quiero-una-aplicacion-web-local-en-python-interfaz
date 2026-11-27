@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+import re
 import shutil
 import time
 
@@ -14,6 +15,7 @@ from yt_music_dl.models import (
     ProgressSnapshot,
     TrackResult,
 )
+from yt_music_dl.validation import normalize_youtube_url
 
 
 class CancelledDownloadError(Exception):
@@ -57,10 +59,101 @@ _TRANSIENT_ERROR_MARKERS = (
 )
 
 
+_BOT_OR_403_MARKERS = (
+    "403",
+    "http error 403",
+    "forbidden",
+    "not a bot",
+    "sign in to confirm",
+)
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_YTDLP_ID_ERR_RE = re.compile(r"\[youtube(?:[:\w]+)?\]\s+([A-Za-z0-9_-]{6,}):\s*(.+)")
+
+
 def _is_transient_error(msg: str) -> bool:
     """Return True when an error message indicates a transient network or rate-limit issue."""
     lower = msg.lower()
     return any(marker in lower for marker in _TRANSIENT_ERROR_MARKERS)
+
+
+def _is_bot_or_403_error(msg: str) -> bool:
+    """Return True when an error message indicates HTTP 403 or YouTube bot verification."""
+    lower = msg.lower()
+    return any(marker in lower for marker in _BOT_OR_403_MARKERS)
+
+
+def _clean_ytdlp_error_line(raw: str) -> str:
+    """Extract a concise, human-readable error line from yt-dlp/ffmpeg stderr output."""
+    cleaned = _ANSI_RE.sub("", raw or "").strip()
+    if cleaned.lower().startswith("error:"):
+        cleaned = cleaned[6:].strip()
+    match = _YTDLP_ID_ERR_RE.match(cleaned)
+    if match:
+        return match.group(2).strip()
+    return cleaned
+
+
+class _YtdlpCaptureLogger:
+    """yt-dlp logger that captures stderr error lines per video ID and sequentially."""
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.errors_by_id: dict[str, str] = {}
+        self.last_error: str | None = None
+        self._consume_idx: int = 0
+
+    def reset(self) -> None:
+        self.errors.clear()
+        self.errors_by_id.clear()
+        self.last_error = None
+        self._consume_idx = 0
+
+    def debug(self, msg: str) -> None:
+        pass
+
+    def info(self, msg: str) -> None:
+        pass
+
+    def warning(self, msg: str) -> None:
+        text = str(msg or "").strip()
+        if not text:
+            return
+        lower = text.lower()
+        if _is_bot_or_403_error(lower) or "unavailable" in lower or "ffmpeg" in lower:
+            clean = _clean_ytdlp_error_line(text)
+            if clean:
+                self.last_error = clean
+
+    def error(self, msg: str) -> None:
+        raw = _ANSI_RE.sub("", str(msg or "")).strip()
+        if not raw:
+            return
+        match = _YTDLP_ID_ERR_RE.search(raw)
+        clean = _clean_ytdlp_error_line(raw)
+        if not clean:
+            return
+        if match:
+            self.errors_by_id[match.group(1)] = clean
+        self.errors.append(clean)
+        self.last_error = clean
+
+    def get_error(self, track_id: str | None) -> str | None:
+        if track_id and track_id in self.errors_by_id:
+            return self.errors_by_id[track_id]
+        return None
+
+    def pop_next_error(self) -> str | None:
+        if self._consume_idx < len(self.errors):
+            val = self.errors[self._consume_idx]
+            self._consume_idx += 1
+            return val
+        return None
+
+    def has_bot_or_403_error(self) -> bool:
+        if self.last_error and _is_bot_or_403_error(self.last_error):
+            return True
+        return any(_is_bot_or_403_error(err) for err in self.errors)
 
 
 def _check_ytdlp_status() -> dict[str, Any]:
@@ -116,6 +209,8 @@ def build_ytdlp_options(
     staging_dir: Path,
     archive_path: Path,
     progress_hook: Callable[[dict[str, Any]], None],
+    logger: Any = None,
+    extractor_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct yt-dlp configuration for single tracks or playlists."""
     if request.audio_format not in ALLOWED_AUDIO_FORMATS:
@@ -171,9 +266,17 @@ def build_ytdlp_options(
         "ignoreerrors": request.is_playlist,
         "quiet": True,
         "no_warnings": True,
+        "sleep_interval": 1.5,
+        "max_sleep_interval": 3.5,
+        "retries": 3,
+        "fragment_retries": 3,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
     }
+    if logger is not None:
+        opts["logger"] = logger
+    if extractor_args is not None:
+        opts["extractor_args"] = extractor_args
     if request.is_playlist and request.selected_tracks:
         opts["playlist_items"] = ",".join(str(idx) for idx in request.selected_tracks)
     return opts
@@ -247,27 +350,66 @@ class YtDlpAdapter:
             elif status == "error":
                 raise FatalDownloadError(str(data.get("error") or "Download error"))
 
+        capture_logger = _YtdlpCaptureLogger()
         opts = build_ytdlp_options(
             request=request,
             staging_dir=staging_dir,
             archive_path=archive_path,
             progress_hook=progress_hook,
+            logger=capture_logger,
         )
+        target_url = normalize_youtube_url(request.url)
+
+        metadata_by_index: dict[int, dict[str, Any]] = {}
+        metadata_by_pos: dict[int, dict[str, Any]] = {}
+        for pos, meta in enumerate(request.track_metadata, start=1):
+            if isinstance(meta, dict):
+                metadata_by_pos[pos] = meta
+                raw_idx = meta.get("index")
+                if isinstance(raw_idx, int):
+                    metadata_by_index[raw_idx] = meta
 
         info: Any = None
-        for attempt in range(self._max_retries + 1):
+        current_opts = dict(opts)
+        used_fallback_client = False
+        attempt = 0
+        while True:
             if is_cancelled():
                 raise CancelledDownloadError("Download cancelled by user.")
             try:
-                with self._ydl_factory(opts) as ydl:
-                    info = ydl.extract_info(request.url, download=True)
+                with self._ydl_factory(current_opts) as ydl:
+                    info = ydl.extract_info(target_url, download=True)
+
+                entries_check = info.get("entries") if isinstance(info, dict) else None
+                if (
+                    entries_check is not None
+                    and any(e is None for e in entries_check)
+                    and capture_logger.has_bot_or_403_error()
+                    and not used_fallback_client
+                ):
+                    used_fallback_client = True
+                    capture_logger.reset()
+                    current_opts = {
+                        **opts,
+                        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+                    }
+                    continue
                 break
             except CancelledDownloadError:
                 raise
             except Exception as exc:
                 msg = str(exc)
+                if _is_bot_or_403_error(msg) and not used_fallback_client:
+                    used_fallback_client = True
+                    capture_logger.reset()
+                    current_opts = {
+                        **opts,
+                        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+                    }
+                    continue
                 if _is_transient_error(msg) and attempt < self._max_retries:
                     delay = self._backoff_base * (2 ** attempt)
+                    attempt += 1
                     time.sleep(delay)
                     if is_cancelled():
                         raise CancelledDownloadError("Download cancelled by user.")
@@ -275,7 +417,7 @@ class YtDlpAdapter:
                 lower = msg.lower()
                 if any(marker in lower for marker in _FATAL_ERROR_MARKERS) or not request.is_playlist:
                     raise FatalDownloadError(msg) from exc
-                failed.append({"id": "playlist", "reason": msg})
+                failed.append({"id": "playlist", "reason": _clean_ytdlp_error_line(msg) or msg})
                 info = None
                 break
 
@@ -288,31 +430,56 @@ class YtDlpAdapter:
         entries = info.get("entries") if isinstance(info, dict) else None
         if entries is not None:
             for idx, entry in enumerate(entries, start=1):
+                orig_index = (
+                    request.selected_tracks[idx - 1]
+                    if request.selected_tracks and idx - 1 < len(request.selected_tracks)
+                    else idx
+                )
+                meta = metadata_by_index.get(orig_index) or metadata_by_pos.get(idx) or {}
                 if entry is None:
-                    err_id = f"entry-{idx}"
-                    reason = "Video unavailable or private"
-                    failed.append({"id": err_id, "reason": reason})
+                    err_id = str(meta.get("id") or f"track-{orig_index}")
+                    real_title = str(meta.get("title") or f"Pista {orig_index}")
+                    track_url = meta.get("url")
+                    reason = (
+                        capture_logger.get_error(err_id)
+                        or capture_logger.pop_next_error()
+                        or capture_logger.last_error
+                        or "Video unavailable or private"
+                    )
+                    failed.append({"id": err_id, "title": real_title, "reason": reason})
                     tracks.append(
                         TrackResult(
                             track_id=err_id,
-                            title=err_id,
+                            title=real_title,
                             status="failed",
                             reason=reason,
+                            url=str(track_url) if track_url else None,
                         )
                     )
                     continue
 
-                vid = str(entry.get("id") or f"entry-{idx}")
-                title = str(entry.get("title") or vid)
+                vid = str(entry.get("id") or meta.get("id") or f"track-{orig_index}")
+                title = str(entry.get("title") or meta.get("title") or vid)
+                track_url = entry.get("webpage_url") or entry.get("url") or meta.get("url")
                 if vid in seen_archive_before:
                     skipped_archive.append(vid)
                     tracks.append(
-                        TrackResult(track_id=vid, title=title, status="skipped")
+                        TrackResult(
+                            track_id=vid,
+                            title=title,
+                            status="skipped",
+                            url=str(track_url) if track_url else None,
+                        )
                     )
                 else:
                     downloaded.append(title)
                     tracks.append(
-                        TrackResult(track_id=vid, title=title, status="downloaded")
+                        TrackResult(
+                            track_id=vid,
+                            title=title,
+                            status="downloaded",
+                            url=str(track_url) if track_url else None,
+                        )
                     )
         elif isinstance(info, dict):
             vid = str(info.get("id") or "track")
@@ -333,6 +500,7 @@ class YtDlpAdapter:
 
     def preview(self, url: str) -> dict[str, Any]:
         """Extract metadata for a YouTube video or playlist without downloading."""
+        target_url = normalize_youtube_url(url)
         opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -340,7 +508,7 @@ class YtDlpAdapter:
             "skip_download": True,
         }
         with self._ydl_factory(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(target_url, download=False)
 
         if not isinstance(info, dict):
             raise FatalDownloadError("No se pudieron obtener metadatos de la URL.")
@@ -390,11 +558,18 @@ class YtDlpAdapter:
                     and entry["thumbnails"]
                 ):
                     entry_thumb = entry["thumbnails"][-1].get("url")
+                entry_id = entry.get("id") or f"track-{idx}"
+                entry_url = (
+                    entry.get("webpage_url")
+                    or entry.get("url")
+                    or (f"https://www.youtube.com/watch?v={entry['id']}" if entry.get("id") else None)
+                )
                 tracks.append(
                     {
                         "index": idx,
-                        "id": entry.get("id") or f"track-{idx}",
+                        "id": entry_id,
                         "title": str(entry.get("title") or f"Pista {idx}"),
+                        "url": entry_url,
                         "duration": entry.get("duration"),
                         "thumbnail": entry_thumb,
                         "thumbnail_url": entry_thumb,

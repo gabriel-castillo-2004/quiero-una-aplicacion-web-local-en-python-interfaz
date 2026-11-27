@@ -57,6 +57,7 @@ class TrackResult:
     status: Literal["downloaded", "skipped", "failed"]
     file_path: str | None = None
     reason: str | None = None
+    url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +66,7 @@ class TrackResult:
             "status": self.status,
             "file_path": self.file_path,
             "reason": self.reason,
+            "url": self.url,
         }
 
 
@@ -128,6 +130,7 @@ class DownloadRequest:
     selected_tracks: tuple[int, ...] | None = None
     skip_duplicates: bool = False
     concurrency: int = 1
+    track_metadata: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

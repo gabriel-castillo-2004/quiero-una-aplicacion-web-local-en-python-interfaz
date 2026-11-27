@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path, PureWindowsPath
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 import re
 
 from yt_music_dl.ports import FileSystemPort
@@ -81,6 +81,19 @@ def is_playlist_url(url: str) -> bool:
     path = parsed.path.rstrip("/")
     qs = parse_qs(parsed.query)
     return path == "/playlist" or bool(qs.get("list", [""])[0].strip())
+
+
+def normalize_youtube_url(url: str) -> str:
+    """Normalize music.youtube.com playlist URLs to www.youtube.com before passing to yt-dlp."""
+    cleaned = (url or "").strip()
+    if not cleaned:
+        return cleaned
+    parsed = urlparse(cleaned)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+    if host == "music.youtube.com" and path == "/playlist":
+        return urlunparse(parsed._replace(scheme="https", netloc="www.youtube.com"))
+    return cleaned
 
 
 def sanitize_filename(name: str, max_len: int = 120) -> str:

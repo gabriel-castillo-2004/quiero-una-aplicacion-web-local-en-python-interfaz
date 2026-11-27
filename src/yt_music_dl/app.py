@@ -444,6 +444,20 @@ def create_app(
         ):
             return jsonify({"error": "concurrency must be an integer between 1 and 3."}), 400
 
+        raw_tracks = payload.get("tracks")
+        track_metadata: list[dict[str, Any]] = []
+        if isinstance(raw_tracks, list):
+            for entry in raw_tracks:
+                if isinstance(entry, dict):
+                    track_metadata.append(
+                        {
+                            "index": entry.get("index"),
+                            "id": entry.get("id"),
+                            "title": entry.get("title"),
+                            "url": entry.get("url"),
+                        }
+                    )
+
         audio_format: AudioFormat = cast(AudioFormat, raw_format)
         req = DownloadRequest(
             url=clean_url,
@@ -454,6 +468,7 @@ def create_app(
             selected_tracks=selected_tracks,
             skip_duplicates=skip_duplicates,
             concurrency=raw_concurrency,
+            track_metadata=tuple(track_metadata),
         )
         job = job_manager.submit_job(req)
         return jsonify({"job_id": job.job_id, "status": job.status}), 201
