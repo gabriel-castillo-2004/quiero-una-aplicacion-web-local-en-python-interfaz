@@ -84,6 +84,21 @@ def create_app(
     def favicon_ico() -> Response:
         return app.send_static_file("favicon.svg")
 
+    @app.get("/health")
+    def liveness_health() -> tuple[Response, int]:
+        check = preflight.check_ffmpeg()
+        available = bool(check.get("available"))
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "ffmpeg_available": available,
+                    "details": check,
+                }
+            ),
+            200,
+        )
+
     @app.get("/api/health")
     def health() -> tuple[Response, int]:
         check = preflight.check_ffmpeg()
