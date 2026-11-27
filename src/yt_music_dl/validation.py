@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from pathlib import Path, PureWindowsPath
+from urllib.parse import parse_qs, unquote, urlparse
 import re
 
 from yt_music_dl.ports import FileSystemPort
@@ -125,3 +125,44 @@ def validate_destination_dir(raw_path: str, fs: FileSystemPort) -> Path:
         raise ValidationError(f"Destination directory is not writable: {exc}") from exc
 
     return resolved
+
+
+def resolve_safe_library_path(base_dir: Path, raw_rel_path: str) -> Path:
+    """Resolve a relative audio path inside base_dir, rejecting any traversal attempt."""
+    if not isinstance(raw_rel_path, str) or not raw_rel_path.strip():
+        raise ValidationError("Audio path must be a non-empty relative path.")
+
+    cleaned = raw_rel_path.strip()
+    if "\x00" in cleaned:
+        raise ValidationError("Audio path contains null bytes.")
+
+    unquoted = unquote(cleaned).strip()
+    if not unquoted or "\x00" in unquoted:
+        raise ValidationError("Audio path is invalid.")
+
+    if (
+        cleaned.startswith(("/", "\\"))
+        or unquoted.startswith(("/", "\\"))
+        or Path(cleaned).is_absolute()
+        or Path(unquoted).is_absolute()
+        or PureWindowsPath(cleaned).is_absolute()
+        or PureWindowsPath(unquoted).is_absolute()
+    ):
+        raise ValidationError("Absolute paths are not allowed.")
+
+    normalized = unquoted.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts) or ":" in parts[0]:
+        raise ValidationError("Path traversal is not allowed.")
+
+    base_resolved = base_dir.resolve()
+    candidate = base_resolved.joinpath(*parts).resolve()
+    try:
+        candidate.relative_to(base_resolved)
+    except ValueError as exc:
+        raise ValidationError("Path escapes allowed library directory.") from exc
+
+    if candidate == base_resolved:
+        raise ValidationError("Path must reference a file inside the library directory.")
+
+    return candidate

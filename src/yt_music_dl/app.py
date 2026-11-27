@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 import io
+import mimetypes
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -30,11 +32,92 @@ from yt_music_dl.ports import EventBusPort, FileSystemPort, PreflightPort
 from yt_music_dl.validation import (
     ValidationError,
     is_playlist_url,
+    resolve_safe_library_path,
     validate_destination_dir,
     validate_youtube_url,
 )
 
 ALLOWED_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
+_RANGE_HEADER_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+_AUDIO_MIME_OVERRIDES = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".opus": "audio/opus",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".aac": "audio/aac",
+}
+
+
+def _guess_audio_mimetype(file_path: Path) -> str:
+    ext = file_path.suffix.lower()
+    if ext in _AUDIO_MIME_OVERRIDES:
+        return _AUDIO_MIME_OVERRIDES[ext]
+    guessed, _ = mimetypes.guess_type(str(file_path))
+    return guessed or "application/octet-stream"
+
+
+def _serve_audio_with_range(file_path: Path) -> Response:
+    """Serve an audio file with HTTP Range (206 Partial Content) support."""
+    mime = _guess_audio_mimetype(file_path)
+    file_size = file_path.stat().st_size
+    range_header = request.headers.get("Range")
+
+    if not range_header:
+        resp = send_file(file_path, mimetype=mime, conditional=True)
+        resp.headers.setdefault("Accept-Ranges", "bytes")
+        return resp
+
+    match = _RANGE_HEADER_RE.match(range_header.strip())
+    if not match or file_size == 0:
+        return Response(
+            status=416,
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    start_str, end_str = match.groups()
+    if not start_str and not end_str:
+        return Response(
+            status=416,
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    if start_str:
+        start = int(start_str)
+        end = int(end_str) if end_str else file_size - 1
+    else:
+        suffix_len = int(end_str)
+        if suffix_len <= 0:
+            return Response(
+                status=416,
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+        start = max(file_size - suffix_len, 0)
+        end = file_size - 1
+
+    if start >= file_size or end < start:
+        return Response(
+            status=416,
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    end = min(end, file_size - 1)
+    chunk_len = end - start + 1
+    with file_path.open("rb") as fh:
+        fh.seek(start)
+        data = fh.read(chunk_len)
+
+    return Response(
+        data,
+        status=206,
+        mimetype=mime,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(len(data)),
+        },
+    )
 
 
 def _is_valid_local_host(host_header: str | None) -> bool:
@@ -177,6 +260,58 @@ def create_app(
     @app.get("/api/default-dir")
     def default_dir() -> tuple[Response, int]:
         return jsonify({"default_dir": str(fs.default_music_dir())}), 200
+
+    def _resolve_library_dir() -> Path:
+        raw_dest = request.args.get("dest_dir")
+        if raw_dest and raw_dest.strip():
+            return fs.resolve_dir(raw_dest)
+        return fs.default_music_dir().resolve()
+
+    @app.get("/api/library")
+    def list_library() -> tuple[Response, int]:
+        try:
+            library_dir = _resolve_library_dir()
+        except (OSError, ValueError) as exc:
+            return jsonify({"error": f"Invalid library directory: {exc}"}), 400
+
+        list_fn = getattr(fs, "list_audio_files", None)
+        if callable(list_fn):
+            items = list_fn(library_dir)
+        else:
+            items = LocalFileSystemAdapter().list_audio_files(library_dir)
+
+        query = (request.args.get("q") or "").strip().lower()
+        fmt = (request.args.get("format") or "").strip().lower()
+        if query:
+            items = [
+                it
+                for it in items
+                if query in str(it.get("name", "")).lower()
+                or query in str(it.get("relative_path", "")).lower()
+                or query in str(it.get("folder", "")).lower()
+            ]
+        if fmt:
+            items = [it for it in items if str(it.get("format", "")).lower() == fmt]
+
+        return jsonify({"directory": str(library_dir), "tracks": items}), 200
+
+    @app.get("/api/library/audio")
+    def stream_library_audio() -> Response | tuple[Response, int]:
+        raw_path = request.args.get("path", "")
+        try:
+            library_dir = _resolve_library_dir()
+        except (OSError, ValueError) as exc:
+            return jsonify({"error": f"Invalid library directory: {exc}"}), 400
+
+        try:
+            target = resolve_safe_library_path(library_dir, raw_path)
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 403
+
+        if not target.is_file():
+            return jsonify({"error": "Audio file not found"}), 404
+
+        return _serve_audio_with_range(target)
 
     @app.post("/api/open-folder")
     def open_folder() -> tuple[Response, int]:
