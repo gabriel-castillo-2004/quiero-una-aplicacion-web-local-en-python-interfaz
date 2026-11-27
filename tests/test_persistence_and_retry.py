@@ -394,5 +394,113 @@ def test_frontend_includes_retry_and_duplicate_skip_wiring(tmp_path: Path) -> No
 
         assert "/retry" in js
         assert "retry" in html or "reintentar" in html
+        assert "skip_duplicates" in html or "skip_duplicates" in js
+        assert "already_downloaded" in js
+        assert "Ya descargada" in js
     finally:
         manager.shutdown()
+
+
+def test_job_creation_marks_already_downloaded_by_video_id_and_format(tmp_path: Path) -> None:
+    store_path = tmp_path / "state.db"
+    dest_dir = tmp_path / "music"
+    dest_dir.mkdir()
+
+    downloader1 = _RecordingDownloader(tracks=[("vid1", "Song 1")])
+    manager1, _ = _build_persistent_manager(tmp_path, downloader1, store_path)
+    try:
+        job1 = manager1.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/watch?v=vid1",
+                dest_dir=dest_dir,
+                audio_format="mp3",
+                is_playlist=False,
+                quality="192",
+            )
+        )
+        done1 = _wait_for_terminal(manager1, job1.job_id)
+        assert done1.status == "completed"
+    finally:
+        manager1.shutdown()
+
+    downloader2 = _RecordingDownloader(tracks=[("vid1", "Song 1"), ("vid2", "Song 2")])
+    manager2, _ = _build_persistent_manager(tmp_path, downloader2, store_path)
+    try:
+        mp3_job = manager2.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/playlist?list=PL_MARK",
+                dest_dir=dest_dir,
+                audio_format="mp3",
+                is_playlist=True,
+                quality="192",
+                track_metadata=(
+                    {"index": 1, "id": "vid1", "title": "Song 1"},
+                    {"index": 2, "id": "vid2", "title": "Song 2"},
+                ),
+            )
+        )
+        assert mp3_job.request.track_metadata[0].get("already_downloaded") is True
+        assert mp3_job.request.track_metadata[1].get("already_downloaded") is False
+
+        m4a_job = manager2.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/playlist?list=PL_MARK",
+                dest_dir=dest_dir,
+                audio_format="m4a",
+                is_playlist=True,
+                quality="best",
+                track_metadata=(
+                    {"index": 1, "id": "vid1", "title": "Song 1"},
+                    {"index": 2, "id": "vid2", "title": "Song 2"},
+                ),
+            )
+        )
+        assert m4a_job.request.track_metadata[0].get("already_downloaded") is False
+        assert m4a_job.request.track_metadata[1].get("already_downloaded") is False
+    finally:
+        manager2.shutdown()
+
+
+def test_playlist_skip_duplicates_respects_format_in_sqlite_library(tmp_path: Path) -> None:
+    store_path = tmp_path / "state.db"
+    dest_dir = tmp_path / "music"
+    dest_dir.mkdir()
+
+    # Download vid1 as mp3 first
+    downloader1 = _RecordingDownloader(tracks=[("vid1", "Song 1")])
+    manager1, _ = _build_persistent_manager(tmp_path, downloader1, store_path)
+    try:
+        job1 = manager1.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/watch?v=vid1",
+                dest_dir=dest_dir,
+                audio_format="mp3",
+                is_playlist=False,
+                quality="192",
+            )
+        )
+        done1 = _wait_for_terminal(manager1, job1.job_id)
+        assert done1.status == "completed"
+    finally:
+        manager1.shutdown()
+
+    # Requesting the same video in m4a with skip_duplicates=True should still download it
+    downloader2 = _RecordingDownloader(tracks=[("vid1", "Song 1")])
+    manager2, _ = _build_persistent_manager(tmp_path, downloader2, store_path)
+    try:
+        job2 = manager2.submit_job(
+            DownloadRequest(
+                url="https://www.youtube.com/playlist?list=PL_FMT",
+                dest_dir=dest_dir,
+                audio_format="m4a",
+                is_playlist=True,
+                quality="best",
+                skip_duplicates=True,
+            )
+        )
+        done2 = _wait_for_terminal(manager2, job2.job_id)
+        assert done2.status == "completed"
+        assert done2.manifest is not None
+        assert "vid1" in done2.manifest.downloaded
+    finally:
+        manager2.shutdown()

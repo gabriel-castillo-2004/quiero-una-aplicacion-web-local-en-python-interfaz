@@ -22,6 +22,7 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from yt_music_dl.adapters.fs_adapter import LocalFileSystemAdapter
+from yt_music_dl.adapters.sqlite_adapter import SqlitePersistenceAdapter
 from yt_music_dl.adapters.ytdlp_adapter import SystemPreflightAdapter, YtDlpAdapter
 from yt_music_dl.app import create_app
 from yt_music_dl.event_bus import InMemoryEventBus
@@ -32,6 +33,7 @@ def _build_test_app(
     tmp_path: Path,
     *,
     downloader: Any = None,
+    store: Any = None,
 ) -> tuple[Any, JobManager]:
     fs = LocalFileSystemAdapter()
     event_bus = InMemoryEventBus()
@@ -41,6 +43,7 @@ def _build_test_app(
         fs=fs,
         event_bus=event_bus,
         staging_root=staging_root,
+        store=store,
     )
     app = create_app(
         job_manager=manager,
@@ -379,4 +382,213 @@ def test_mod16_cancel_active_job_transitions_to_cancelled_and_cleans_staging(
         assert list(dest_dir.glob("*.mp3")) == []
     finally:
         allow_continue.set()
+        manager.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 4. Metadata inspection cache (TTL, max entries, explicit refresh) & library flags
+# ---------------------------------------------------------------------------
+
+
+def _build_ytdlp_adapter_with_cache(
+    ydl_factory: Any,
+    *,
+    ttl_seconds: float | None = None,
+    max_entries: int | None = None,
+) -> YtDlpAdapter:
+    import inspect
+
+    sig = inspect.signature(YtDlpAdapter.__init__)
+    kwargs: dict[str, Any] = {"ydl_factory": ydl_factory}
+    if ttl_seconds is not None:
+        for name in ("preview_cache_ttl", "cache_ttl", "inspect_cache_ttl", "ttl"):
+            if name in sig.parameters:
+                kwargs[name] = ttl_seconds
+                break
+        else:
+            pytest.fail("YtDlpAdapter.__init__ must accept a configurable cache TTL parameter")
+    if max_entries is not None:
+        for name in (
+            "preview_cache_max_entries",
+            "cache_max_entries",
+            "inspect_cache_max_entries",
+            "max_cache_entries",
+            "max_entries",
+        ):
+            if name in sig.parameters:
+                kwargs[name] = max_entries
+                break
+        else:
+            pytest.fail("YtDlpAdapter.__init__ must accept a configurable cache max_entries parameter")
+    return YtDlpAdapter(**kwargs)
+
+
+def _preview_with_refresh(adapter: YtDlpAdapter, url: str, *, refresh: bool) -> dict[str, Any]:
+    import inspect
+
+    sig = inspect.signature(adapter.preview)
+    for name in ("refresh", "force_refresh", "bypass_cache"):
+        if name in sig.parameters:
+            return adapter.preview(url, **{name: refresh})  # type: ignore[call-arg]
+    pytest.fail("YtDlpAdapter.preview must accept an explicit refresh parameter")
+
+
+def test_mod16_inspect_preview_uses_in_memory_cache_and_supports_refresh() -> None:
+    call_count = 0
+
+    def fake_ydl_factory(opts: dict[str, Any]) -> Any:
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__.return_value = mock_ydl
+        mock_ydl.__exit__.return_value = False
+
+        def fake_extract_info(url: str, download: bool = False) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            return {
+                "id": "cacheVid1",
+                "title": f"Cached Track v{call_count}",
+                "uploader": "Artist",
+                "duration": 180,
+                "thumbnail": "https://i.ytimg.com/vi/cacheVid1/hqdefault.jpg",
+            }
+
+        mock_ydl.extract_info.side_effect = fake_extract_info
+        return mock_ydl
+
+    adapter = _build_ytdlp_adapter_with_cache(fake_ydl_factory, ttl_seconds=300.0, max_entries=32)
+    url = "https://www.youtube.com/watch?v=cacheVid1"
+
+    first = adapter.preview(url)
+    second = adapter.preview(url)
+    assert call_count == 1
+    assert first["title"] == "Cached Track v1"
+    assert second["title"] == "Cached Track v1"
+
+    refreshed = _preview_with_refresh(adapter, url, refresh=True)
+    assert call_count == 2
+    assert refreshed["title"] == "Cached Track v2"
+
+
+def test_mod16_inspect_preview_cache_expires_after_ttl() -> None:
+    call_count = 0
+
+    def fake_ydl_factory(opts: dict[str, Any]) -> Any:
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__.return_value = mock_ydl
+        mock_ydl.__exit__.return_value = False
+
+        def fake_extract_info(url: str, download: bool = False) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            return {
+                "id": "ttlVid1",
+                "title": f"TTL Track v{call_count}",
+                "uploader": "Artist",
+                "duration": 120,
+            }
+
+        mock_ydl.extract_info.side_effect = fake_extract_info
+        return mock_ydl
+
+    adapter = _build_ytdlp_adapter_with_cache(fake_ydl_factory, ttl_seconds=0.05, max_entries=16)
+    url = "https://www.youtube.com/watch?v=ttlVid1"
+
+    first = adapter.preview(url)
+    assert first["title"] == "TTL Track v1"
+    assert call_count == 1
+
+    time.sleep(0.08)
+    after_ttl = adapter.preview(url)
+    assert call_count == 2
+    assert after_ttl["title"] == "TTL Track v2"
+
+
+def test_mod16_inspect_preview_cache_evicts_when_max_entries_exceeded() -> None:
+    calls: list[str] = []
+
+    def fake_ydl_factory(opts: dict[str, Any]) -> Any:
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__.return_value = mock_ydl
+        mock_ydl.__exit__.return_value = False
+
+        def fake_extract_info(url: str, download: bool = False) -> dict[str, Any]:
+            calls.append(url)
+            vid = url.split("v=")[-1]
+            return {"id": vid, "title": f"Track {vid}", "duration": 100}
+
+        mock_ydl.extract_info.side_effect = fake_extract_info
+        return mock_ydl
+
+    adapter = _build_ytdlp_adapter_with_cache(fake_ydl_factory, ttl_seconds=300.0, max_entries=2)
+    u1 = "https://www.youtube.com/watch?v=vidA1"
+    u2 = "https://www.youtube.com/watch?v=vidB2"
+    u3 = "https://www.youtube.com/watch?v=vidC3"
+
+    adapter.preview(u1)
+    adapter.preview(u2)
+    adapter.preview(u3)
+    assert len(calls) == 3
+
+    # u1 must have been evicted when u3 was inserted into a 2-entry cache
+    adapter.preview(u1)
+    assert len(calls) == 4
+
+
+def test_mod16_inspect_marks_already_downloaded_tracks_by_id_and_format(tmp_path: Path) -> None:
+    store = SqlitePersistenceAdapter(tmp_path / "library.db")
+    import inspect
+
+    rec_sig = inspect.signature(store.record_downloaded_ids)
+    if "audio_format" in rec_sig.parameters:
+        store.record_downloaded_ids(["v1"], audio_format="mp3")  # type: ignore[call-arg]
+    elif "format" in rec_sig.parameters:
+        store.record_downloaded_ids(["v1"], format="mp3")  # type: ignore[call-arg]
+    else:
+        store.record_downloaded_ids(["v1"])
+
+    app, manager = _build_test_app(tmp_path, store=store)
+    try:
+        client = app.test_client()
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__.return_value = mock_ydl
+        mock_ydl.__exit__.return_value = False
+        mock_ydl.extract_info.return_value = {
+            "_type": "playlist",
+            "id": "PL_LIBRARY",
+            "title": "Library Check Playlist",
+            "entries": [
+                {"id": "v1", "title": "Already Downloaded Song", "duration": 180},
+                {"id": "v2", "title": "New Song", "duration": 200},
+            ],
+        }
+
+        with patch("yt_dlp.YoutubeDL", return_value=mock_ydl):
+            mp3_resp = client.post(
+                "/api/inspect",
+                json={
+                    "url": "https://www.youtube.com/playlist?list=PL_LIBRARY",
+                    "format": "mp3",
+                    "refresh": True,
+                },
+                headers={"X-CSRF-Token": "test-csrf-token"},
+            )
+            assert mp3_resp.status_code == 200
+            mp3_tracks = mp3_resp.get_json()["tracks"]
+            assert mp3_tracks[0]["already_downloaded"] is True
+            assert mp3_tracks[1]["already_downloaded"] is False
+
+            m4a_resp = client.post(
+                "/api/inspect",
+                json={
+                    "url": "https://www.youtube.com/playlist?list=PL_LIBRARY",
+                    "format": "m4a",
+                    "refresh": True,
+                },
+                headers={"X-CSRF-Token": "test-csrf-token"},
+            )
+            assert m4a_resp.status_code == 200
+            m4a_tracks = m4a_resp.get_json()["tracks"]
+            assert m4a_tracks[0]["already_downloaded"] is False
+            assert m4a_tracks[1]["already_downloaded"] is False
+    finally:
         manager.shutdown()

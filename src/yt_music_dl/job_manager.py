@@ -86,8 +86,31 @@ class JobManager:
             with self._store_lock:
                 self._store.save_job(job)
 
+    def get_downloaded_ids(self, audio_format: str | None = None) -> set[str]:
+        """Return downloaded video IDs from persistence store, optionally scoped by format."""
+        if self._store is None:
+            return set()
+        with self._store_lock:
+            try:
+                return set(self._store.get_downloaded_ids(audio_format=audio_format))
+            except TypeError:
+                return set(self._store.get_downloaded_ids())
+
     def submit_job(self, request: DownloadRequest) -> JobState:
         """Enqueue a validated download request and return its initial pending state."""
+        if request.track_metadata:
+            known_ids = self.get_downloaded_ids(audio_format=request.audio_format)
+            annotated_tracks = tuple(
+                {
+                    **dict(track),
+                    "already_downloaded": bool(
+                        track.get("id") and str(track.get("id")) in known_ids
+                    ),
+                }
+                for track in request.track_metadata
+            )
+            request = replace(request, track_metadata=annotated_tracks)
+
         job_id = uuid.uuid4().hex[:12]
         snapshot = ProgressSnapshot(
             job_id=job_id,
@@ -197,7 +220,9 @@ class JobManager:
         archive_path = job.request.dest_dir / "archive.txt"
         if job.request.skip_duplicates and self._store is not None:
             with self._archive_lock:
-                self._seed_archive_from_store(archive_path)
+                self._seed_archive_from_store(
+                    archive_path, audio_format=job.request.audio_format
+                )
 
         self._transition_and_publish(
             job_id,
@@ -258,9 +283,19 @@ class JobManager:
                 )
                 self._jobs[job_id] = completed
 
-            if self._store is not None and manifest.downloaded:
+            downloaded_ids = [
+                t.track_id
+                for t in manifest.tracks
+                if t.status == "downloaded" and t.track_id
+            ] or list(manifest.downloaded)
+            if self._store is not None and downloaded_ids:
                 with self._store_lock:
-                    self._store.record_downloaded_ids(manifest.downloaded)
+                    try:
+                        self._store.record_downloaded_ids(
+                            downloaded_ids, audio_format=completed.request.audio_format
+                        )
+                    except TypeError:
+                        self._store.record_downloaded_ids(downloaded_ids)
             self._persist_job(completed)
 
             payload = final_snap.to_dict()
@@ -293,10 +328,12 @@ class JobManager:
         finally:
             self._fs.cleanup_dir(staging_dir)
 
-    def _seed_archive_from_store(self, archive_path: Path) -> None:
+    def _seed_archive_from_store(
+        self, archive_path: Path, *, audio_format: str | None = None
+    ) -> None:
         if self._store is None:
             return
-        known_ids = self._store.get_downloaded_ids()
+        known_ids = self.get_downloaded_ids(audio_format=audio_format)
         if not known_ids:
             return
         archive_path.parent.mkdir(parents=True, exist_ok=True)
