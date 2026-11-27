@@ -345,3 +345,110 @@ def test_stream_job_audio_blocks_path_traversal_outside_dest_dir(tmp_path: Path)
         assert "escapes" in resp.get_json()["error"]
     finally:
         manager.shutdown()
+
+
+@pytest.mark.parametrize(
+    "valid_host",
+    ["127.0.0.1", "127.0.0.1:8081", "localhost", "localhost:8081"],
+)
+def test_local_host_header_security_accepts_localhost_and_loopback(
+    tmp_path: Path, valid_host: str
+) -> None:
+    app, manager = _build_test_app(tmp_path)
+    try:
+        client = app.test_client()
+        resp = client.get("/health", headers={"Host": valid_host})
+        assert resp.status_code == 200
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+def test_before_request_rejects_cross_origin_and_missing_csrf_on_mutating_methods(
+    tmp_path: Path, method: str
+) -> None:
+    app, manager = _build_test_app(tmp_path)
+    try:
+        client = app.test_client()
+
+        cross_origin_resp = client.open(
+            "/api/preview",
+            method=method,
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            headers={
+                "Host": "127.0.0.1:8081",
+                "Origin": "https://evil.example.com",
+                "X-CSRF-Token": "security-test-csrf",
+            },
+        )
+        assert cross_origin_resp.status_code == 403
+        assert "Cross-origin" in cross_origin_resp.get_json()["error"]
+
+        missing_csrf_resp = client.open(
+            "/api/preview",
+            method=method,
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            headers={
+                "Host": "127.0.0.1:8081",
+                "Origin": "http://127.0.0.1:8081",
+            },
+        )
+        assert missing_csrf_resp.status_code == 403
+        assert "CSRF" in missing_csrf_resp.get_json()["error"]
+
+        wrong_csrf_resp = client.open(
+            "/api/preview",
+            method=method,
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            headers={
+                "Host": "localhost:8081",
+                "Origin": "http://localhost:8081",
+                "X-CSRF-Token": "wrong-token",
+            },
+        )
+        assert wrong_csrf_resp.status_code == 403
+        assert "CSRF" in wrong_csrf_resp.get_json()["error"]
+    finally:
+        manager.shutdown()
+
+
+def test_before_request_accepts_same_origin_with_valid_csrf(tmp_path: Path) -> None:
+    app, manager = _build_test_app(tmp_path)
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    try:
+        client = app.test_client()
+        with patch.object(manager, "submit_job") as mock_submit:
+            mock_submit.return_value.job_id = "job-same-origin"
+            mock_submit.return_value.status = "pending"
+            resp = client.post(
+                "/api/jobs",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "format": "mp3",
+                    "dest_dir": str(dest_dir),
+                },
+                headers={
+                    "Host": "localhost:8081",
+                    "Origin": "http://localhost:8081",
+                    "X-CSRF-Token": "security-test-csrf",
+                },
+            )
+        assert resp.status_code == 201
+        assert resp.get_json()["job_id"] == "job-same-origin"
+    finally:
+        manager.shutdown()
+
+
+def test_csrf_token_injected_in_index_html_and_sent_by_app_js(tmp_path: Path) -> None:
+    app, manager = _build_test_app(tmp_path)
+    try:
+        client = app.test_client()
+        html = client.get("/").get_data(as_text=True)
+        app_js = client.get("/static/app.js").get_data(as_text=True)
+
+        assert '<meta name="csrf-token" content="security-test-csrf"' in html
+        assert 'meta[name="csrf-token"]' in app_js
+        assert "X-CSRF-Token" in app_js
+    finally:
+        manager.shutdown()
