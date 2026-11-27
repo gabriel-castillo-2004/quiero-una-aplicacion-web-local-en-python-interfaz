@@ -11,6 +11,8 @@ const submitBtn = document.getElementById('submit-btn');
 const cancelBtn = document.getElementById('cancel-btn');
 const openFolderBtn = document.getElementById('open-folder-btn');
 const downloadedCountEl = document.getElementById('downloaded-count');
+const backendStatusEl = document.getElementById('backend-status');
+const backendStatusText = document.getElementById('backend-status-text');
 const formError = document.getElementById('form-error');
 const ffmpegBanner = document.getElementById('ffmpeg-warning');
 
@@ -107,6 +109,98 @@ let ffmpegAvailable = true;
 let eventSource = null;
 let pollTimer = null;
 let previewTimer = null;
+let previewAbortController = null;
+let healthTimer = null;
+let pollErrorCount = 0;
+
+function setBackendStatus(state, label) {
+  if (backendStatusEl) {
+    backendStatusEl.className = `status-pill is-${state}`;
+    backendStatusEl.setAttribute('aria-label', `Estado de conexión con el servidor local: ${label}`);
+  }
+  if (backendStatusText) {
+    backendStatusText.textContent = label;
+  }
+}
+
+function clearFormError() {
+  if (!formError) return;
+  formError.replaceChildren();
+  formError.classList.remove('has-error');
+}
+
+function showFormError(message, options = {}) {
+  if (!formError) return;
+  const { onRetry } = options;
+  formError.replaceChildren();
+  if (!message) {
+    formError.classList.remove('has-error');
+    return;
+  }
+  formError.classList.add('has-error');
+  const textSpan = document.createElement('span');
+  textSpan.className = 'error-msg-text';
+  textSpan.textContent = message;
+  formError.appendChild(textSpan);
+
+  const actionsDiv = document.createElement('div');
+  actionsDiv.className = 'error-msg-actions';
+
+  if (typeof onRetry === 'function') {
+    const retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'btn-secondary btn-xs';
+    retryBtn.textContent = 'Reintentar';
+    retryBtn.addEventListener('click', () => {
+      clearFormError();
+      onRetry();
+    });
+    actionsDiv.appendChild(retryBtn);
+  }
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'btn-secondary btn-xs';
+  dismissBtn.textContent = 'Cerrar';
+  dismissBtn.setAttribute('aria-label', 'Cerrar mensaje de error');
+  dismissBtn.addEventListener('click', clearFormError);
+  actionsDiv.appendChild(dismissBtn);
+
+  formError.appendChild(actionsDiv);
+}
+
+async function checkBackendHealth(options = {}) {
+  const { showErrorOnFail = false } = options;
+  try {
+    const res = await fetch('/api/health');
+    const hData = await res.json().catch(() => ({}));
+    ffmpegAvailable = Boolean(hData.ffmpeg_available);
+    updateFfmpegWarning();
+    if (res.ok) {
+      setBackendStatus('online', 'Conectado');
+      return true;
+    }
+    if (res.status === 503) {
+      setBackendStatus('degraded', 'Conectado (sin ffmpeg)');
+      return true;
+    }
+    setBackendStatus('offline', 'Error del servidor');
+    if (showErrorOnFail) {
+      showFormError('El servidor local devolvió un error al comprobar su estado.', {
+        onRetry: () => checkBackendHealth({ showErrorOnFail: true }),
+      });
+    }
+    return false;
+  } catch (_) {
+    setBackendStatus('offline', 'Sin conexión');
+    if (showErrorOnFail) {
+      showFormError('No hay conexión con el servidor local.', {
+        onRetry: () => checkBackendHealth({ showErrorOnFail: true }),
+      });
+    }
+    return false;
+  }
+}
 
 let queueTracksState = [];
 let playableQueue = [];
@@ -593,15 +687,23 @@ function finalizeLiveQueueFromManifest(manifest, retryBasePayload) {
 }
 
 async function fetchPreview(url) {
+  if (previewAbortController) {
+    previewAbortController.abort();
+    previewAbortController = null;
+  }
   if (!url || !/^https?:\/\//i.test(url)) {
     if (previewLoading) previewLoading.hidden = true;
     previewCard.classList.remove('visible', 'is-loading');
+    previewCard.removeAttribute('aria-busy');
     currentPreview = null;
     renderPreviewTracks([]);
     return;
   }
+  previewAbortController = new AbortController();
+  const { signal } = previewAbortController;
   if (previewLoading) previewLoading.hidden = false;
   previewCard.classList.add('visible', 'is-loading');
+  previewCard.setAttribute('aria-busy', 'true');
   try {
     const res = await fetch('/api/preview', {
       method: 'POST',
@@ -610,14 +712,20 @@ async function fetchPreview(url) {
         'X-CSRF-Token': csrfToken,
       },
       body: JSON.stringify({ url }),
+      signal,
     });
     if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
       previewCard.classList.remove('visible', 'is-loading');
       currentPreview = null;
       renderPreviewTracks([]);
+      showFormError(err.error || 'No se pudo obtener la vista previa de la URL.', {
+        onRetry: () => fetchPreview(url),
+      });
       return;
     }
     const data = await res.json();
+    clearFormError();
     currentPreview = data;
     previewTitle.textContent = data.title || 'Sin título';
     previewAuthor.textContent = data.author || data.channel || data.uploader || '';
@@ -629,10 +737,16 @@ async function fetchPreview(url) {
     renderPreviewTracks(data.tracks || []);
     previewCard.classList.remove('is-loading');
     previewCard.classList.add('visible');
-  } catch (_) {
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
     previewCard.classList.remove('visible', 'is-loading');
+    setBackendStatus('offline', 'Sin conexión');
+    showFormError('No se pudo conectar con el servidor para obtener la vista previa.', {
+      onRetry: () => fetchPreview(url),
+    });
   } finally {
     if (previewLoading) previewLoading.hidden = true;
+    previewCard.removeAttribute('aria-busy');
   }
 }
 
@@ -640,19 +754,27 @@ async function init() {
   renderRecentDirChips();
   renderHistory();
 
-  try {
-    const health = await fetch('/api/health');
-    const hData = await health.json();
-    ffmpegAvailable = Boolean(hData.ffmpeg_available);
-    updateFfmpegWarning();
-  } catch (_) {}
+  if (backendStatusEl) {
+    backendStatusEl.addEventListener('click', () => {
+      setBackendStatus('checking', 'Comprobando...');
+      checkBackendHealth({ showErrorOnFail: true });
+    });
+  }
+
+  await checkBackendHealth({ showErrorOnFail: true });
+  if (healthTimer) clearInterval(healthTimer);
+  healthTimer = setInterval(() => {
+    checkBackendHealth();
+  }, 30000);
 
   try {
     const res = await fetch('/api/default-dir');
-    const data = await res.json();
-    if (data.default_dir) {
-      destInput.value = data.default_dir;
-      if (loadRecentDirs().length === 0) saveRecentDir(data.default_dir);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.default_dir) {
+        destInput.value = data.default_dir;
+        if (loadRecentDirs().length === 0) saveRecentDir(data.default_dir);
+      }
     }
   } catch (_) {}
 }
@@ -808,20 +930,33 @@ function startMonitoring(jobId) {
     eventSource.addEventListener(name, handleEvent);
   });
 
+  pollErrorCount = 0;
   pollTimer = setInterval(async () => {
     try {
       const r = await fetch(`/api/jobs/${jobId}`);
       if (r.ok) {
+        pollErrorCount = 0;
         const job = await r.json();
         if (job.progress) applySnapshot(job.progress);
+      } else {
+        pollErrorCount += 1;
       }
-    } catch (_) {}
+    } catch (_) {
+      pollErrorCount += 1;
+      if (pollErrorCount >= 3) {
+        setBackendStatus('offline', 'Sin conexión');
+        showFormError('Se perdió la conexión con el servidor local durante la descarga.', {
+          onRetry: () => checkBackendHealth({ showErrorOnFail: true }),
+        });
+      }
+    }
   }, 1500);
 }
 
 async function submitDownloadJob(requestPayload) {
-  formError.textContent = '';
-  submitBtn.disabled = true;
+  clearFormError();
+  if (form) form.setAttribute('aria-busy', 'true');
+  setButtonLoading(submitBtn, true, 'Iniciando...');
 
   try {
     const res = await fetch('/api/jobs', {
@@ -832,12 +967,20 @@ async function submitDownloadJob(requestPayload) {
       },
       body: JSON.stringify(requestPayload),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      formError.textContent = data.error || 'Error al crear el trabajo.';
-      submitBtn.disabled = false;
+      setButtonLoading(submitBtn, false);
+      if (form) form.removeAttribute('aria-busy');
+      showFormError(data.error || 'Error al crear el trabajo.', {
+        onRetry: () => submitDownloadJob(requestPayload),
+      });
       return;
     }
+
+    setButtonLoading(submitBtn, false);
+    submitBtn.disabled = true;
+    if (form) form.removeAttribute('aria-busy');
+    setBackendStatus('online', 'Conectado');
 
     saveRecentDir(requestPayload.dest_dir);
 
@@ -892,14 +1035,18 @@ async function submitDownloadJob(requestPayload) {
     });
     startMonitoring(data.job_id);
   } catch (_) {
-    formError.textContent = 'Error de conexión con el servidor local.';
-    submitBtn.disabled = false;
+    setButtonLoading(submitBtn, false);
+    if (form) form.removeAttribute('aria-busy');
+    setBackendStatus('offline', 'Sin conexión');
+    showFormError('Error de conexión con el servidor local.', {
+      onRetry: () => submitDownloadJob(requestPayload),
+    });
   }
 }
 
 if (pasteBtn) {
   pasteBtn.addEventListener('click', async () => {
-    formError.textContent = '';
+    clearFormError();
     try {
       const text = await navigator.clipboard.readText();
       if (text && text.trim()) {
@@ -908,7 +1055,7 @@ if (pasteBtn) {
       }
     } catch (_) {
       urlInput.focus();
-      formError.textContent = 'No se pudo leer el portapapeles; pega la URL manualmente.';
+      showFormError('No se pudo leer el portapapeles; pega la URL manualmente.');
     }
   });
 }
@@ -943,7 +1090,7 @@ function setButtonLoading(btn, isLoading, loadingText) {
 
 if (pickFolderBtn) {
   pickFolderBtn.addEventListener('click', async () => {
-    formError.textContent = '';
+    clearFormError();
     setButtonLoading(pickFolderBtn, true, 'Abriendo...');
     try {
       const res = await fetch('/api/pick-folder', {
@@ -959,10 +1106,12 @@ if (pickFolderBtn) {
         destInput.value = data.selected_dir;
         saveRecentDir(data.selected_dir);
       } else if (!res.ok) {
-        formError.textContent = data.error || 'Selector de carpetas no disponible.';
+        showFormError(data.error || 'Selector de carpetas no disponible.');
       }
     } catch (_) {
-      formError.textContent = 'No se pudo abrir el selector de carpetas.';
+      showFormError('No se pudo abrir el selector de carpetas.', {
+        onRetry: () => pickFolderBtn.click(),
+      });
     } finally {
       setButtonLoading(pickFolderBtn, false);
     }
@@ -987,7 +1136,7 @@ urlInput.addEventListener('input', () => {
 });
 
 openFolderBtn.addEventListener('click', async () => {
-  formError.textContent = '';
+  clearFormError();
   setButtonLoading(openFolderBtn, true, 'Abriendo...');
   try {
     const res = await fetch('/api/open-folder', {
@@ -1000,10 +1149,12 @@ openFolderBtn.addEventListener('click', async () => {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      formError.textContent = err.error || 'No se pudo abrir la carpeta.';
+      showFormError(err.error || 'No se pudo abrir la carpeta.');
     }
   } catch (_) {
-    formError.textContent = 'No se pudo comunicar con el servidor.';
+    showFormError('No se pudo comunicar con el servidor.', {
+      onRetry: () => openFolderBtn.click(),
+    });
   } finally {
     setButtonLoading(openFolderBtn, false);
   }
@@ -1017,7 +1168,7 @@ form.addEventListener('submit', async (e) => {
   const selectedTracks = getSelectedTrackIndices();
 
   if (Array.isArray(selectedTracks) && selectedTracks.length === 0) {
-    formError.textContent = 'Selecciona al menos una canción de la playlist.';
+    showFormError('Selecciona al menos una canción de la playlist.');
     return;
   }
 
@@ -1035,11 +1186,25 @@ form.addEventListener('submit', async (e) => {
 
 cancelBtn.addEventListener('click', async () => {
   if (!currentJobId) return;
-  cancelBtn.disabled = true;
-  await fetch(`/api/jobs/${currentJobId}/cancel`, {
-    method: 'POST',
-    headers: { 'X-CSRF-Token': csrfToken },
-  });
+  clearFormError();
+  setButtonLoading(cancelBtn, true, 'Cancelando...');
+  try {
+    const res = await fetch(`/api/jobs/${currentJobId}/cancel`, {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setButtonLoading(cancelBtn, false);
+      showFormError(err.error || 'No se pudo cancelar la descarga.');
+      return;
+    }
+    setButtonLoading(cancelBtn, false);
+    cancelBtn.disabled = true;
+  } catch (_) {
+    setButtonLoading(cancelBtn, false);
+    showFormError('Error de conexión al intentar cancelar la descarga.');
+  }
 });
 
 init();

@@ -25,6 +25,18 @@
         </div>
       </div>
       <div class="hero-actions">
+        <button
+          id="backend-status"
+          type="button"
+          class="status-pill is-checking"
+          role="status"
+          aria-live="polite"
+          aria-label="Estado de conexión con el servidor local: conectando"
+          title="Comprobar estado del servidor local"
+        >
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="backend-status-text">Conectando...</span>
+        </button>
         <div class="stat-pill" title="Canciones descargadas">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
@@ -132,7 +144,7 @@
             <span>Cancelar</span>
           </button>
         </div>
-        <div id="form-error" class="error-msg" role="status"></div>
+        <div id="form-error" class="error-msg" role="status" aria-live="polite"></div>
       </form>
     </section>
 
