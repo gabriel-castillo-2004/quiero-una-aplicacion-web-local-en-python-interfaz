@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 import queue
 
-from yt_music_dl.models import DownloadManifest, DownloadRequest, ProgressSnapshot
+from yt_music_dl.models import DownloadManifest, DownloadRequest, JobState, ProgressSnapshot
 
 
 @runtime_checkable
@@ -80,4 +80,29 @@ class PreflightPort(Protocol):
 
     def check_ffmpeg(self) -> dict[str, Any]:
         """Check availability of ffmpeg and ffprobe binaries."""
+        ...
+
+
+@runtime_checkable
+class PersistencePort(Protocol):
+    """Port for lightweight local persistence of jobs and downloaded video IDs."""
+
+    def save_job(self, job: JobState) -> None:
+        """Persist or update a job's state."""
+        ...
+
+    def load_jobs(self) -> list[JobState]:
+        """Load all persisted jobs ordered by creation time."""
+        ...
+
+    def get_job(self, job_id: str) -> JobState | None:
+        """Load a single persisted job by ID, or None if not found."""
+        ...
+
+    def record_downloaded_ids(self, video_ids: Iterable[str]) -> None:
+        """Record one or more video IDs as already downloaded."""
+        ...
+
+    def get_downloaded_ids(self) -> set[str]:
+        """Return the set of all previously downloaded video IDs."""
         ...
