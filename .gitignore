@@ -1,15 +1,27 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
+# Residual / local runtime directories
+%SystemDrive%/
+Python/
 .venv/
 venv/
 .agent-factory/
-Python/
+
+# Python caches & bytecode
+__pycache__/
+*.pyc
+*.py[cod]
+.pytest_cache/
+
+# Databases
+*.db
+
+# Node / Playwright
 node_modules/
 playwright-report/
 test-results/
-%SystemDrive%/
+blob-report/
+playwright/.cache/
 
+# Downloaded media
 downloads/
 *.mp3
 *.webm
