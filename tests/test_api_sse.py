@@ -154,3 +154,218 @@ def test_open_folder_headless_returns_clear_json_error(tmp_path: Path) -> None:
         assert "No se pudo abrir la carpeta" in data["error"]
     finally:
         manager.shutdown()
+
+
+def test_event_bus_thread_safe_concurrent_track_progress_and_sse_isolation(
+    tmp_path: Path,
+) -> None:
+    """Concurrent progress emissions across multiple jobs remain thread-safe and isolated per SSE stream."""
+    import json
+    import threading
+    import time
+    from unittest.mock import MagicMock
+
+    dest_dir = tmp_path / "music_concurrent"
+    dest_dir.mkdir()
+
+    def fake_ydl_factory(opts: dict[str, Any]) -> Any:
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__.return_value = mock_ydl
+        mock_ydl.__exit__.return_value = False
+
+        def fake_extract_info(url: str, download: bool = False) -> dict[str, Any]:
+            vid = url.split("=")[-1]
+            hook = opts["progress_hooks"][0]
+            for pct in (250, 750):
+                hook(
+                    {
+                        "status": "downloading",
+                        "downloaded_bytes": pct,
+                        "total_bytes": 1000,
+                        "info_dict": {"id": vid, "title": f"Track {vid}"},
+                    }
+                )
+                time.sleep(0.01)
+            hook(
+                {
+                    "status": "finished",
+                    "info_dict": {"id": vid, "title": f"Track {vid}"},
+                }
+            )
+            if download:
+                out_parent = Path(opts["outtmpl"]).parent
+                out_parent.mkdir(parents=True, exist_ok=True)
+                (out_parent / f"Track {vid}.mp3").write_bytes(b"mp3-bytes")
+            return {"id": vid, "title": f"Track {vid}"}
+
+        mock_ydl.extract_info.side_effect = fake_extract_info
+        return mock_ydl
+
+    fs = LocalFileSystemAdapter()
+    event_bus = InMemoryEventBus()
+    manager = JobManager(
+        downloader=YtDlpAdapter(ydl_factory=fake_ydl_factory),
+        fs=fs,
+        event_bus=event_bus,
+        staging_root=tmp_path / "staging",
+        max_workers=3,
+    )
+    app = create_app(
+        job_manager=manager,
+        event_bus=event_bus,
+        fs=fs,
+        preflight=_FakePreflight(True),
+        csrf_token="test-csrf-token",
+    )
+    app.config["TESTING"] = True
+
+    try:
+        client = app.test_client()
+        job_ids: list[str] = []
+        for idx in range(3):
+            resp = client.post(
+                "/api/jobs",
+                json={
+                    "url": f"https://www.youtube.com/watch?v=concurrent{idx:02d}",
+                    "format": "mp3",
+                    "quality": "192",
+                    "dest_dir": str(dest_dir),
+                    "concurrency": 3,
+                },
+                headers={"X-CSRF-Token": "test-csrf-token"},
+            )
+            assert resp.status_code == 201
+            job_ids.append(resp.get_json()["job_id"])
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            statuses = [
+                client.get(f"/api/jobs/{jid}").get_json()["status"] for jid in job_ids
+            ]
+            if all(s == "completed" for s in statuses):
+                break
+            time.sleep(0.02)
+
+        for jid in job_ids:
+            job_payload = client.get(f"/api/jobs/{jid}").get_json()
+            assert job_payload["status"] == "completed"
+
+            sse_resp = client.get(f"/api/jobs/{jid}/events")
+            assert sse_resp.status_code == 200
+            body = sse_resp.get_data(as_text=True)
+            assert f'"job_id": "{jid}"' in body
+            assert "completed" in body
+
+        # Also verify direct thread-safe publishing on InMemoryEventBus under contention
+        errors: list[Exception] = []
+
+        def _spam_publish(worker_idx: int) -> None:
+            try:
+                for step in range(30):
+                    event_bus.publish(
+                        f"stress-{worker_idx}",
+                        "progress",
+                        {"job_id": f"stress-{worker_idx}", "progress": float(step)},
+                    )
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_spam_publish, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
+
+        assert errors == []
+        for i in range(4):
+            snap, history, q = event_bus.subscribe_with_snapshot(f"stress-{i}")
+            event_bus.unsubscribe(f"stress-{i}", q)
+            assert snap is not None
+            assert snap["job_id"] == f"stress-{i}"
+            assert len(history) == 30
+            assert json.loads(json.dumps(snap))["progress"] == 29.0
+    finally:
+        manager.shutdown()
+
+
+def test_api_recovers_from_transient_rate_limit_and_reports_completion_via_sse(
+    tmp_path: Path,
+) -> None:
+    """A job experiencing a transient 429 error recovers via retry and streams completion via SSE."""
+    import time
+    from unittest.mock import MagicMock
+
+    dest_dir = tmp_path / "music_retry"
+    dest_dir.mkdir()
+    attempts = 0
+
+    def fake_ydl_factory(opts: dict[str, Any]) -> Any:
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__.return_value = mock_ydl
+        mock_ydl.__exit__.return_value = False
+
+        def fake_extract_info(url: str, download: bool = False) -> dict[str, Any]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("HTTP Error 429: Too Many Requests")
+            if download:
+                out_parent = Path(opts["outtmpl"]).parent
+                out_parent.mkdir(parents=True, exist_ok=True)
+                (out_parent / "Recovered.mp3").write_bytes(b"recovered-audio")
+            return {"id": "rec1", "title": "Recovered"}
+
+        mock_ydl.extract_info.side_effect = fake_extract_info
+        return mock_ydl
+
+    fs = LocalFileSystemAdapter()
+    event_bus = InMemoryEventBus()
+    manager = JobManager(
+        downloader=YtDlpAdapter(ydl_factory=fake_ydl_factory),
+        fs=fs,
+        event_bus=event_bus,
+        staging_root=tmp_path / "staging",
+        max_workers=2,
+    )
+    app = create_app(
+        job_manager=manager,
+        event_bus=event_bus,
+        fs=fs,
+        preflight=_FakePreflight(True),
+        csrf_token="test-csrf-token",
+    )
+    app.config["TESTING"] = True
+
+    try:
+        client = app.test_client()
+        with patch("time.sleep"):
+            resp = client.post(
+                "/api/jobs",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "format": "mp3",
+                    "quality": "192",
+                    "dest_dir": str(dest_dir),
+                    "concurrency": 2,
+                },
+                headers={"X-CSRF-Token": "test-csrf-token"},
+            )
+            assert resp.status_code == 201
+            job_id = resp.get_json()["job_id"]
+
+            deadline = time.monotonic() + 5.0
+            status = "pending"
+            while time.monotonic() < deadline:
+                status = client.get(f"/api/jobs/{job_id}").get_json()["status"]
+                if status in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(0.02)
+
+        assert status == "completed"
+        assert attempts == 2
+        sse_resp = client.get(f"/api/jobs/{job_id}/events")
+        assert sse_resp.status_code == 200
+        assert "completed" in sse_resp.get_data(as_text=True)
+    finally:
+        manager.shutdown()
+

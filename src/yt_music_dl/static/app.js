@@ -7,6 +7,7 @@ const destInput = document.getElementById('dest-input');
 const pickFolderBtn = document.getElementById('pick-folder-btn');
 const recentDirsChips = document.getElementById('recent-dirs-chips');
 const formatQualitySelect = document.getElementById('format-quality-select');
+const concurrencySelect = document.getElementById('concurrency-select');
 const skipDuplicatesCheckbox = document.getElementById('skip-duplicates-checkbox');
 const submitBtn = document.getElementById('submit-btn');
 const cancelBtn = document.getElementById('cancel-btn');
@@ -1560,11 +1561,16 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
+  const concurrency = concurrencySelect
+    ? Number.parseInt(concurrencySelect.value, 10) || 1
+    : 1;
+
   const payload = {
     url,
     dest_dir: destDir,
     format,
     quality,
+    concurrency,
     skip_duplicates: skipDuplicatesCheckbox ? skipDuplicatesCheckbox.checked : false,
   };
   if (Array.isArray(selectedTracks) && selectedTracks.length > 0) {

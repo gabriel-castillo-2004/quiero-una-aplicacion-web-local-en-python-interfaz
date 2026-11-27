@@ -436,6 +436,14 @@ def create_app(
                 selected_tracks = tuple(parsed_indices)
 
         skip_duplicates = bool(payload.get("skip_duplicates", False))
+        raw_concurrency = payload.get("concurrency", 1)
+        if (
+            isinstance(raw_concurrency, bool)
+            or not isinstance(raw_concurrency, int)
+            or not (1 <= raw_concurrency <= 3)
+        ):
+            return jsonify({"error": "concurrency must be an integer between 1 and 3."}), 400
+
         audio_format: AudioFormat = cast(AudioFormat, raw_format)
         req = DownloadRequest(
             url=clean_url,
@@ -445,6 +453,7 @@ def create_app(
             quality=raw_quality,
             selected_tracks=selected_tracks,
             skip_duplicates=skip_duplicates,
+            concurrency=raw_concurrency,
         )
         job = job_manager.submit_job(req)
         return jsonify({"job_id": job.job_id, "status": job.status}), 201
@@ -584,12 +593,14 @@ def main() -> None:
         os.environ.get("YT_MUSIC_DL_STATE_DB", str(Path.home() / ".yt_music_dl" / "state.db"))
     )
     store = SqlitePersistenceAdapter(store_path)
+    max_workers = max(1, min(int(os.environ.get("YT_MUSIC_DL_MAX_WORKERS", "3")), 3))
     job_manager = JobManager(
         downloader=downloader,
         fs=fs,
         event_bus=event_bus,
         staging_root=staging_root,
         store=store,
+        max_workers=max_workers,
     )
     app = create_app(
         job_manager=job_manager,

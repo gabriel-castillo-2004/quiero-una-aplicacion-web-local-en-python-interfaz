@@ -34,6 +34,7 @@ class JobManager:
         event_bus: EventBusPort,
         staging_root: Path,
         store: PersistencePort | None = None,
+        max_workers: int = 1,
     ) -> None:
         self._downloader = downloader
         self._fs = fs
@@ -41,8 +42,11 @@ class JobManager:
         self._staging_root = staging_root
         self._staging_root.mkdir(parents=True, exist_ok=True)
         self._store = store
+        self._max_workers = max(1, min(int(max_workers), 3))
 
         self._lock = threading.Lock()
+        self._archive_lock = threading.Lock()
+        self._store_lock = threading.Lock()
         self._jobs: dict[str, JobState] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._queue: queue.Queue[str | None] = queue.Queue()
@@ -65,16 +69,20 @@ class JobManager:
                 self._jobs[restored.job_id] = restored
                 self._cancel_events[restored.job_id] = threading.Event()
 
-        self._worker = threading.Thread(
-            target=self._worker_loop,
-            name="yt-music-dl-worker",
-            daemon=True,
-        )
-        self._worker.start()
+        self._workers: list[threading.Thread] = []
+        for idx in range(self._max_workers):
+            worker = threading.Thread(
+                target=self._worker_loop,
+                name=f"yt-music-dl-worker-{idx + 1}",
+                daemon=True,
+            )
+            worker.start()
+            self._workers.append(worker)
 
     def _persist_job(self, job: JobState) -> None:
         if self._store is not None:
-            self._store.save_job(job)
+            with self._store_lock:
+                self._store.save_job(job)
 
     def submit_job(self, request: DownloadRequest) -> JobState:
         """Enqueue a validated download request and return its initial pending state."""
@@ -143,13 +151,15 @@ class JobManager:
             return True
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Stop accepting new jobs and wait for the worker thread to exit."""
+        """Stop accepting new jobs and wait for all worker threads to exit."""
         with self._lock:
             if self._shutdown_called:
                 return
             self._shutdown_called = True
-        self._queue.put(None)
-        self._worker.join(timeout=timeout)
+        for _ in self._workers:
+            self._queue.put(None)
+        for worker in self._workers:
+            worker.join(timeout=timeout)
 
     def _worker_loop(self) -> None:
         while True:
@@ -181,7 +191,8 @@ class JobManager:
         staging_dir.mkdir(parents=True, exist_ok=True)
         archive_path = job.request.dest_dir / "archive.txt"
         if job.request.skip_duplicates and self._store is not None:
-            self._seed_archive_from_store(archive_path)
+            with self._archive_lock:
+                self._seed_archive_from_store(archive_path)
 
         self._transition_and_publish(
             job_id,
@@ -220,7 +231,8 @@ class JobManager:
             if cancel_ev.is_set():
                 raise CancelledDownloadError("Cancelled after download")
 
-            promoted = self._promote_staged_audio(staging_dir, job.request.dest_dir)
+            with self._archive_lock:
+                promoted = self._promote_staged_audio(staging_dir, job.request.dest_dir)
 
             final_snap = ProgressSnapshot(
                 job_id=job_id,
@@ -242,7 +254,8 @@ class JobManager:
                 self._jobs[job_id] = completed
 
             if self._store is not None and manifest.downloaded:
-                self._store.record_downloaded_ids(manifest.downloaded)
+                with self._store_lock:
+                    self._store.record_downloaded_ids(manifest.downloaded)
             self._persist_job(completed)
 
             payload = final_snap.to_dict()

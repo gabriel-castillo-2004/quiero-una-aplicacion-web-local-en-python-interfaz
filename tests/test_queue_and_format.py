@@ -199,3 +199,172 @@ def test_ui_exposes_queue_panel_cancel_retry_format_selector_and_download_links(
         assert "?download=1" in app_js
     finally:
         manager.shutdown()
+
+
+def test_job_manager_runs_concurrent_pool_bounded_by_max_workers(tmp_path: Path) -> None:
+    """JobManager executes up to max_workers (1..3) jobs in parallel without exceeding the limit."""
+    import threading
+
+    active_lock = threading.Lock()
+    active_count = 0
+    max_observed_active = 0
+    two_running = threading.Event()
+
+    class _BarrierDownloader:
+        def download(
+            self,
+            request: DownloadRequest,
+            staging_dir: Path,
+            archive_path: Path,
+            on_progress: Any,
+            is_cancelled: Any,
+        ) -> Any:
+            nonlocal active_count, max_observed_active
+            from yt_music_dl.models import DownloadManifest, ProgressSnapshot, TrackResult
+
+            with active_lock:
+                active_count += 1
+                if active_count > max_observed_active:
+                    max_observed_active = active_count
+                if active_count >= 2:
+                    two_running.set()
+
+            # Wait briefly so concurrent workers overlap deterministically
+            two_running.wait(timeout=2.0)
+            time.sleep(0.05)
+
+            try:
+                on_progress(
+                    ProgressSnapshot(
+                        job_id="",
+                        status="downloading",
+                        progress=50.0,
+                        current_track="Track",
+                        message="Downloading",
+                    )
+                )
+                out_file = staging_dir / f"{request.url.split('=')[-1]}.mp3"
+                out_file.write_bytes(b"audio")
+                return DownloadManifest(
+                    downloaded=("Track",),
+                    tracks=(TrackResult(track_id="1", title="Track", status="downloaded"),),
+                )
+            finally:
+                with active_lock:
+                    active_count -= 1
+
+        def preview(self, url: str) -> dict[str, Any]:
+            return {}
+
+    fs = LocalFileSystemAdapter()
+    event_bus = InMemoryEventBus()
+    manager = JobManager(
+        downloader=_BarrierDownloader(),
+        fs=fs,
+        event_bus=event_bus,
+        staging_root=tmp_path / "staging",
+        max_workers=2,
+    )
+    try:
+        dest_dir = tmp_path / "music"
+        dest_dir.mkdir()
+        jobs = [
+            manager.submit_job(
+                DownloadRequest(
+                    url=f"https://www.youtube.com/watch?v=vid{i:02d}aaaaaaa",
+                    dest_dir=dest_dir,
+                    audio_format="mp3",
+                    quality="192",
+                )
+            )
+            for i in range(3)
+        ]
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            states = [manager.get_job(j.job_id) for j in jobs]
+            if all(s is not None and s.status == "completed" for s in states):
+                break
+            time.sleep(0.02)
+
+        states = [manager.get_job(j.job_id) for j in jobs]
+        assert all(s is not None and s.status == "completed" for s in states)
+        assert max_observed_active == 2
+    finally:
+        manager.shutdown()
+
+
+def test_ytdlp_adapter_retries_transient_errors_with_exponential_backoff(
+    tmp_path: Path,
+) -> None:
+    """YtDlpAdapter retries transient network/rate-limit errors with exponential backoff."""
+    from unittest.mock import patch
+
+    attempts = 0
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    archive_path = tmp_path / "archive.txt"
+
+    def fake_ydl_factory(opts: dict[str, Any]) -> Any:
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__.return_value = mock_ydl
+        mock_ydl.__exit__.return_value = False
+
+        def fake_extract_info(url: str, download: bool = False) -> dict[str, Any]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("HTTP Error 429: Too Many Requests")
+            if attempts == 2:
+                raise RuntimeError("Connection reset by peer")
+            return {
+                "id": "vid123",
+                "title": "Recovered Track",
+            }
+
+        mock_ydl.extract_info.side_effect = fake_extract_info
+        return mock_ydl
+
+    adapter = YtDlpAdapter(ydl_factory=fake_ydl_factory)
+    req = DownloadRequest(
+        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        dest_dir=tmp_path / "music",
+        audio_format="mp3",
+        is_playlist=False,
+        quality="192",
+    )
+
+    sleep_delays: list[float] = []
+    with patch("time.sleep", side_effect=lambda d: sleep_delays.append(float(d))):
+        manifest = adapter.download(
+            request=req,
+            staging_dir=staging_dir,
+            archive_path=archive_path,
+            on_progress=lambda _s: None,
+            is_cancelled=lambda: False,
+        )
+
+    assert attempts == 3
+    assert len(sleep_delays) >= 2
+    assert sleep_delays[0] > 0
+    assert sleep_delays[1] > sleep_delays[0]
+    assert manifest.downloaded == ("Recovered Track",)
+    assert manifest.failed == ()
+
+
+def test_ui_exposes_concurrency_selector_for_1_to_3_workers(tmp_path: Path) -> None:
+    """Frontend HTML and JS expose a concurrency selector (1 to 3 workers)."""
+    app, manager = _build_test_app(tmp_path, downloader=YtDlpAdapter())
+    try:
+        client = app.test_client()
+        html = client.get("/").get_data(as_text=True)
+        app_js = client.get("/static/app.js").get_data(as_text=True)
+
+        assert "concurrency" in html.lower()
+        assert 'value="1"' in html
+        assert 'value="2"' in html
+        assert 'value="3"' in html
+        assert "concurrency" in app_js
+    finally:
+        manager.shutdown()
+

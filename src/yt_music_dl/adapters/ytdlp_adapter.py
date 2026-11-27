@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 import shutil
+import time
 
 from yt_music_dl.models import (
     ALLOWED_AUDIO_FORMATS,
@@ -36,6 +37,30 @@ _FATAL_ERROR_MARKERS = (
     "timed out",
     "urlopen error",
 )
+
+_TRANSIENT_ERROR_MARKERS = (
+    "429",
+    "too many requests",
+    "rate limit",
+    "connection reset",
+    "connection aborted",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "temporary failure",
+    "http error 502",
+    "http error 503",
+    "http error 504",
+    "broken pipe",
+    "incomplete read",
+    "network is unreachable",
+)
+
+
+def _is_transient_error(msg: str) -> bool:
+    """Return True when an error message indicates a transient network or rate-limit issue."""
+    lower = msg.lower()
+    return any(marker in lower for marker in _TRANSIENT_ERROR_MARKERS)
 
 
 def _check_ytdlp_status() -> dict[str, Any]:
@@ -160,8 +185,13 @@ class YtDlpAdapter:
     def __init__(
         self,
         ydl_factory: Callable[[dict[str, Any]], Any] | None = None,
+        *,
+        max_retries: int = 3,
+        backoff_base: float = 1.0,
     ) -> None:
         self._ydl_factory = ydl_factory or _default_ydl_factory
+        self._max_retries = max(0, int(max_retries))
+        self._backoff_base = max(0.01, float(backoff_base))
 
     def download(
         self,
@@ -224,18 +254,30 @@ class YtDlpAdapter:
             progress_hook=progress_hook,
         )
 
-        try:
-            with self._ydl_factory(opts) as ydl:
-                info = ydl.extract_info(request.url, download=True)
-        except CancelledDownloadError:
-            raise
-        except Exception as exc:
-            msg = str(exc)
-            lower = msg.lower()
-            if any(marker in lower for marker in _FATAL_ERROR_MARKERS) or not request.is_playlist:
-                raise FatalDownloadError(msg) from exc
-            failed.append({"id": "playlist", "reason": msg})
-            info = None
+        info: Any = None
+        for attempt in range(self._max_retries + 1):
+            if is_cancelled():
+                raise CancelledDownloadError("Download cancelled by user.")
+            try:
+                with self._ydl_factory(opts) as ydl:
+                    info = ydl.extract_info(request.url, download=True)
+                break
+            except CancelledDownloadError:
+                raise
+            except Exception as exc:
+                msg = str(exc)
+                if _is_transient_error(msg) and attempt < self._max_retries:
+                    delay = self._backoff_base * (2 ** attempt)
+                    time.sleep(delay)
+                    if is_cancelled():
+                        raise CancelledDownloadError("Download cancelled by user.")
+                    continue
+                lower = msg.lower()
+                if any(marker in lower for marker in _FATAL_ERROR_MARKERS) or not request.is_playlist:
+                    raise FatalDownloadError(msg) from exc
+                failed.append({"id": "playlist", "reason": msg})
+                info = None
+                break
 
         if is_cancelled():
             raise CancelledDownloadError("Download cancelled by user.")
