@@ -39,7 +39,8 @@ _FATAL_ERROR_MARKERS = (
 
 
 def _check_ytdlp_status() -> dict[str, Any]:
-    """Check whether yt-dlp is importable and return its version."""
+    """Check whether yt-dlp is importable and in PATH, returning its version."""
+    ytdlp_path = shutil.which("yt-dlp")
     try:
         import yt_dlp
 
@@ -47,12 +48,14 @@ def _check_ytdlp_status() -> dict[str, Any]:
         return {
             "available": True,
             "version": str(version) if version else None,
+            "path": ytdlp_path,
             "error": None,
         }
     except Exception as exc:
         return {
             "available": False,
             "version": None,
+            "path": ytdlp_path,
             "error": str(exc),
         }
 
