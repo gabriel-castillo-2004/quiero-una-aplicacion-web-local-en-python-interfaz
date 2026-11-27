@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any, Literal
 import time
 
-AudioFormat = Literal["mp3", "m4a"]
+AudioFormat = Literal["mp3", "m4a", "original"]
+
+ALLOWED_AUDIO_FORMATS: frozenset[str] = frozenset({"mp3", "m4a", "original"})
 
 JobStatus = Literal[
     "pending",

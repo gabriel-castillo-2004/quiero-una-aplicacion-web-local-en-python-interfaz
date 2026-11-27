@@ -45,6 +45,8 @@ def validate_youtube_url(url: str) -> str:
         raise ValidationError("URL must be a non-empty string.")
 
     cleaned = url.strip()
+    if cleaned.startswith("-"):
+        raise ValidationError("URL cannot start with '-'.")
     parsed = urlparse(cleaned)
 
     if parsed.scheme not in {"http", "https"}:

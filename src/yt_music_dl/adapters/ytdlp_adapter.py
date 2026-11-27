@@ -7,6 +7,7 @@ from typing import Any, Callable
 import shutil
 
 from yt_music_dl.models import (
+    ALLOWED_AUDIO_FORMATS,
     DownloadManifest,
     DownloadRequest,
     ProgressSnapshot,
@@ -66,7 +67,7 @@ def build_ytdlp_options(
     progress_hook: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
     """Construct yt-dlp configuration for single tracks or playlists."""
-    if request.audio_format not in {"mp3", "m4a"}:
+    if request.audio_format not in ALLOWED_AUDIO_FORMATS:
         raise ValueError(f"Unsupported audio format: {request.audio_format!r}")
 
     if request.is_playlist:
@@ -85,22 +86,17 @@ def build_ytdlp_options(
     else:
         preferred_quality = "192"
 
-    opts: dict[str, Any] = {
-        "format": "bestaudio/best",
-        "outtmpl": outtmpl,
-        "download_archive": str(archive_path),
-        "writethumbnail": True,
-        "noplaylist": not request.is_playlist,
-        "ignoreerrors": request.is_playlist,
-        "quiet": True,
-        "no_warnings": True,
-        "progress_hooks": [progress_hook],
-        "postprocessors": [
+    postprocessors: list[dict[str, Any]] = []
+    if request.audio_format in {"mp3", "m4a"}:
+        postprocessors.append(
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": request.audio_format,
                 "preferredquality": preferred_quality,
-            },
+            }
+        )
+    postprocessors.extend(
+        [
             {
                 "key": "FFmpegThumbnailsConvertor",
                 "format": "jpg",
@@ -112,7 +108,20 @@ def build_ytdlp_options(
             {
                 "key": "EmbedThumbnail",
             },
-        ],
+        ]
+    )
+
+    opts: dict[str, Any] = {
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "download_archive": str(archive_path),
+        "writethumbnail": True,
+        "noplaylist": not request.is_playlist,
+        "ignoreerrors": request.is_playlist,
+        "quiet": True,
+        "no_warnings": True,
+        "progress_hooks": [progress_hook],
+        "postprocessors": postprocessors,
     }
     if request.is_playlist and request.selected_tracks:
         opts["playlist_items"] = ",".join(str(idx) for idx in request.selected_tracks)
