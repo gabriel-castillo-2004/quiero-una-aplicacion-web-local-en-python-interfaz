@@ -127,6 +127,7 @@ class DownloadRequest:
     quality: str = "192"
     selected_tracks: tuple[int, ...] | None = None
     skip_duplicates: bool = False
+    concurrency: int = 1
 
 
 @dataclass(frozen=True, slots=True)

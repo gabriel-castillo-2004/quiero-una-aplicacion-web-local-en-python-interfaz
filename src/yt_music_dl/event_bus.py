@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from typing import Any, Iterator
+import copy
 import json
 import queue
 import threading
@@ -23,15 +24,16 @@ class InMemoryEventBus:
 
     def publish(self, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
         """Store latest snapshot/history and notify all subscribers for job_id."""
-        event = {"event": event_type, "data": dict(payload)}
+        safe_payload = copy.deepcopy(payload)
+        event = {"event": event_type, "data": safe_payload}
         with self._lock:
-            self._snapshots[job_id] = dict(payload)
+            self._snapshots[job_id] = copy.deepcopy(safe_payload)
             history = self._history.setdefault(
                 job_id, deque(maxlen=self._history_limit)
             )
             history.append(event)
             for sub in list(self._subscribers.get(job_id, [])):
-                sub.put(event)
+                sub.put(copy.deepcopy(event))
 
     def subscribe_with_snapshot(
         self, job_id: str
