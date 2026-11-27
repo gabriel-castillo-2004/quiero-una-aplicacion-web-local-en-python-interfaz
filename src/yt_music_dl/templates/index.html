@@ -129,6 +129,11 @@
           </label>
         </div>
 
+        <label class="checkbox-field" for="skip-duplicates-checkbox">
+          <input id="skip-duplicates-checkbox" name="skip_duplicates" type="checkbox" checked />
+          <span>Omitir canciones ya descargadas en playlists</span>
+        </label>
+
         <div class="actions">
           <button id="submit-btn" type="submit" class="primary">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -172,6 +177,7 @@
       <ul id="live-track-queue" class="live-track-queue"></ul>
       <div class="summary-row">
         <div id="summary" class="summary"></div>
+        <button id="retry-btn" type="button" class="btn-secondary" hidden>Reintentar descarga</button>
         <a id="download-zip-btn" class="btn-secondary zip-btn" href="#" download hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>

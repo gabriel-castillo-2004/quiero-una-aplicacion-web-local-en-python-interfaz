@@ -126,6 +126,7 @@ class DownloadRequest:
     is_playlist: bool = False
     quality: str = "192"
     selected_tracks: tuple[int, ...] | None = None
+    skip_duplicates: bool = False
 
 
 @dataclass(frozen=True, slots=True)

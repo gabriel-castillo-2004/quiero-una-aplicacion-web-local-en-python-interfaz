@@ -17,6 +17,7 @@ import zipfile
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
 from yt_music_dl.adapters.fs_adapter import LocalFileSystemAdapter
+from yt_music_dl.adapters.sqlite_adapter import SqlitePersistenceAdapter
 from yt_music_dl.adapters.ytdlp_adapter import (
     SystemPreflightAdapter,
     YtDlpAdapter,
@@ -299,6 +300,7 @@ def create_app(
             if parsed_indices:
                 selected_tracks = tuple(parsed_indices)
 
+        skip_duplicates = bool(payload.get("skip_duplicates", False))
         audio_format: AudioFormat = cast(AudioFormat, raw_format)
         req = DownloadRequest(
             url=clean_url,
@@ -307,9 +309,16 @@ def create_app(
             is_playlist=is_playlist_url(clean_url),
             quality=raw_quality,
             selected_tracks=selected_tracks,
+            skip_duplicates=skip_duplicates,
         )
         job = job_manager.submit_job(req)
         return jsonify({"job_id": job.job_id, "status": job.status}), 201
+
+    @app.get("/api/jobs")
+    def list_jobs() -> tuple[Response, int]:
+        list_fn = getattr(job_manager, "list_jobs", None)
+        jobs = list_fn() if callable(list_fn) else []
+        return jsonify({"jobs": [j.to_dict() for j in jobs]}), 200
 
     @app.get("/api/jobs/<job_id>")
     def get_job(job_id: str) -> tuple[Response, int]:
@@ -317,6 +326,24 @@ def create_app(
         if job is None:
             return jsonify({"error": "Job not found"}), 404
         return jsonify(job.to_dict()), 200
+
+    @app.post("/api/jobs/<job_id>/retry")
+    def retry_job(job_id: str) -> tuple[Response, int]:
+        retry_fn = getattr(job_manager, "retry_job", None)
+        if callable(retry_fn):
+            try:
+                retried = retry_fn(job_id)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 409
+            if retried is None:
+                return jsonify({"error": "Job not found"}), 404
+            return jsonify({"job_id": retried.job_id, "status": retried.status, "retried_from": job_id}), 201
+
+        existing = job_manager.get_job(job_id)
+        if existing is None:
+            return jsonify({"error": "Job not found"}), 404
+        retried = job_manager.submit_job(existing.request)
+        return jsonify({"job_id": retried.job_id, "status": retried.status, "retried_from": job_id}), 201
 
     @app.post("/api/jobs/<job_id>/cancel")
     def cancel_job(job_id: str) -> tuple[Response, int]:
@@ -418,11 +445,16 @@ def main() -> None:
     downloader = YtDlpAdapter()
     event_bus = InMemoryEventBus()
     staging_root = Path(tempfile.gettempdir()) / "yt_music_dl_staging"
+    store_path = Path(
+        os.environ.get("YT_MUSIC_DL_STATE_DB", str(Path.home() / ".yt_music_dl" / "state.db"))
+    )
+    store = SqlitePersistenceAdapter(store_path)
     job_manager = JobManager(
         downloader=downloader,
         fs=fs,
         event_bus=event_bus,
         staging_root=staging_root,
+        store=store,
     )
     app = create_app(
         job_manager=job_manager,

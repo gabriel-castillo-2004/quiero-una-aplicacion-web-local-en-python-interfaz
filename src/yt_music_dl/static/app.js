@@ -7,6 +7,7 @@ const destInput = document.getElementById('dest-input');
 const pickFolderBtn = document.getElementById('pick-folder-btn');
 const recentDirsChips = document.getElementById('recent-dirs-chips');
 const formatQualitySelect = document.getElementById('format-quality-select');
+const skipDuplicatesCheckbox = document.getElementById('skip-duplicates-checkbox');
 const submitBtn = document.getElementById('submit-btn');
 const cancelBtn = document.getElementById('cancel-btn');
 const openFolderBtn = document.getElementById('open-folder-btn');
@@ -41,6 +42,7 @@ const progressPercent = document.getElementById('progress-percent');
 const progressMsg = document.getElementById('progress-message');
 const liveTrackQueue = document.getElementById('live-track-queue');
 const summaryEl = document.getElementById('summary');
+const retryBtn = document.getElementById('retry-btn');
 const downloadZipBtn = document.getElementById('download-zip-btn');
 
 const historySearch = document.getElementById('history-search');
@@ -106,6 +108,7 @@ attachCoverErrorHandler(trackThumb);
 attachCoverErrorHandler(playerThumb);
 
 let currentJobId = null;
+let lastFinishedJobId = null;
 let currentJobMeta = null;
 let currentPreview = null;
 let ffmpegAvailable = true;
@@ -535,6 +538,19 @@ function renderHistory() {
       itemActions.appendChild(dlLink);
 
       row.appendChild(itemActions);
+    } else if ((item.status === 'failed' || item.status === 'cancelled') && item.job_id) {
+      const itemActions = document.createElement('div');
+      itemActions.className = 'history-item-actions';
+
+      const histRetryBtn = document.createElement('button');
+      histRetryBtn.type = 'button';
+      histRetryBtn.className = 'btn-secondary btn-xs';
+      histRetryBtn.textContent = 'Reintentar';
+      histRetryBtn.addEventListener('click', () => {
+        retryJob(item.job_id);
+      });
+      itemActions.appendChild(histRetryBtn);
+      row.appendChild(itemActions);
     }
 
     li.appendChild(row);
@@ -891,6 +907,54 @@ async function init() {
       }
     }
   } catch (_) {}
+
+  try {
+    const jobsRes = await fetch('/api/jobs');
+    if (jobsRes.ok) {
+      const jobsData = await jobsRes.json();
+      const serverJobs = Array.isArray(jobsData.jobs) ? jobsData.jobs : [];
+      if (serverJobs.length > 0) {
+        const localItems = loadHistory();
+        const existingJobIds = new Set(localItems.map((it) => it.job_id).filter(Boolean));
+        for (const job of serverJobs) {
+          if (existingJobIds.has(job.job_id)) continue;
+          const promoted = Array.isArray(job.promoted_files) ? job.promoted_files : [];
+          if (job.status === 'completed' && promoted.length > 0) {
+            const tracks = (job.manifest && job.manifest.tracks) || [];
+            promoted.forEach((filePath, idx) => {
+              const fileName = String(filePath).split(/[\\/]/).pop() || `Pista ${idx + 1}`;
+              const cleanTitle = fileName.replace(/\.[^.]+$/, '');
+              const trackMeta = tracks[idx];
+              localItems.push({
+                id: `${job.job_id}-${idx}`,
+                job_id: job.job_id,
+                status: 'completed',
+                title: (trackMeta && trackMeta.title) || cleanTitle,
+                track_number: parseTrackNumber(fileName, idx),
+                format: job.audio_format || 'mp3',
+                quality: job.quality || '192',
+                audio_url: `/api/jobs/${job.job_id}/audio/${idx}`,
+              });
+            });
+          } else {
+            localItems.push({
+              id: job.job_id,
+              job_id: job.job_id,
+              url: job.url,
+              dest_dir: job.dest_dir,
+              format: job.audio_format || 'mp3',
+              quality: job.quality || '192',
+              title: job.url,
+              status: job.status,
+              summary: job.error || '',
+            });
+          }
+        }
+        saveHistory(localItems);
+        renderHistory();
+      }
+    }
+  } catch (_) {}
 }
 
 function stopStreams() {
@@ -1018,8 +1082,13 @@ function applySnapshot(data) {
     }
     summaryEl.textContent = summaryText;
 
+    if (retryBtn) {
+      retryBtn.hidden = !['failed', 'cancelled'].includes(status);
+    }
+
     if (currentJobId) {
       const finishedJobId = currentJobId;
+      lastFinishedJobId = finishedJobId;
       currentJobId = null;
       finalizeHistoryFromJob(finishedJobId, data);
     }
@@ -1029,8 +1098,10 @@ function applySnapshot(data) {
 function startMonitoring(jobId) {
   stopStreams();
   currentJobId = jobId;
+  lastFinishedJobId = jobId;
   cancelBtn.disabled = false;
   summaryEl.textContent = '';
+  if (retryBtn) retryBtn.hidden = true;
   if (downloadZipBtn) {
     downloadZipBtn.hidden = true;
     downloadZipBtn.href = '#';
@@ -1067,6 +1138,36 @@ function startMonitoring(jobId) {
       }
     }
   }, 1500);
+}
+
+async function retryJob(jobId) {
+  if (!jobId) return;
+  clearFormError();
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/retry`, {
+      method: 'POST',
+      headers: {
+        'X-CSRF-Token': csrfToken,
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showFormError(data.error || 'No se pudo reintentar la descarga.');
+      return;
+    }
+    submitBtn.disabled = true;
+    startMonitoring(data.job_id);
+  } catch (_) {
+    showFormError('Error de conexión al intentar reintentar la descarga.');
+  }
+}
+
+if (retryBtn) {
+  retryBtn.addEventListener('click', () => {
+    if (lastFinishedJobId) {
+      retryJob(lastFinishedJobId);
+    }
+  });
 }
 
 async function submitDownloadJob(requestPayload) {
@@ -1299,6 +1400,7 @@ form.addEventListener('submit', async (e) => {
     dest_dir: destDir,
     format,
     quality,
+    skip_duplicates: skipDuplicatesCheckbox ? skipDuplicatesCheckbox.checked : false,
   };
   if (Array.isArray(selectedTracks) && selectedTracks.length > 0) {
     payload.selected_tracks = selectedTracks;
