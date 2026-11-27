@@ -16,7 +16,11 @@ import zipfile
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
 from yt_music_dl.adapters.fs_adapter import LocalFileSystemAdapter
-from yt_music_dl.adapters.ytdlp_adapter import SystemPreflightAdapter, YtDlpAdapter
+from yt_music_dl.adapters.ytdlp_adapter import (
+    SystemPreflightAdapter,
+    YtDlpAdapter,
+    _check_ytdlp_status,
+)
 from yt_music_dl.event_bus import InMemoryEventBus
 from yt_music_dl.job_manager import JobManager
 from yt_music_dl.models import ALLOWED_AUDIO_FORMATS, AudioFormat, DownloadRequest
@@ -102,16 +106,48 @@ def create_app(
     @app.get("/api/health")
     def health() -> tuple[Response, int]:
         check = preflight.check_ffmpeg()
-        available = bool(check.get("available"))
+        ffmpeg_available = bool(check.get("available"))
+
+        ytdlp_checker = getattr(preflight, "check_ytdlp", None)
+        ytdlp_info = ytdlp_checker() if callable(ytdlp_checker) else _check_ytdlp_status()
+        ytdlp_available = bool(ytdlp_info.get("available"))
+        ytdlp_version = ytdlp_info.get("version")
+
+        raw_dest = request.args.get("dest_dir") or str(fs.default_music_dir())
+        dest_writable = False
+        dest_error: str | None = None
+        resolved_dest_str = str(raw_dest)
+        try:
+            resolved_dest = fs.resolve_dir(str(raw_dest))
+            resolved_dest_str = str(resolved_dest)
+            fs.ensure_writable(resolved_dest)
+            dest_writable = True
+        except Exception as exc:
+            dest_error = str(exc)
+
+        all_ok = ffmpeg_available and ytdlp_available and dest_writable
+        details = {
+            **check,
+            "yt_dlp": ytdlp_info,
+            "download_dir": {
+                "path": resolved_dest_str,
+                "writable": dest_writable,
+                "error": dest_error,
+            },
+        }
         return (
             jsonify(
                 {
-                    "status": "ok" if available else "degraded",
-                    "ffmpeg_available": available,
-                    "details": check,
+                    "status": "ok" if all_ok else "degraded",
+                    "ffmpeg_available": ffmpeg_available,
+                    "yt_dlp_available": ytdlp_available,
+                    "yt_dlp_version": ytdlp_version,
+                    "download_dir": resolved_dest_str,
+                    "download_dir_writable": dest_writable,
+                    "details": details,
                 }
             ),
-            200 if available else 503,
+            200 if all_ok else 503,
         )
 
     @app.get("/api/default-dir")
