@@ -38,8 +38,27 @@ _FATAL_ERROR_MARKERS = (
 )
 
 
+def _check_ytdlp_status() -> dict[str, Any]:
+    """Check whether yt-dlp is importable and return its version."""
+    try:
+        import yt_dlp
+
+        version = getattr(getattr(yt_dlp, "version", None), "__version__", None)
+        return {
+            "available": True,
+            "version": str(version) if version else None,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "version": None,
+            "error": str(exc),
+        }
+
+
 class SystemPreflightAdapter:
-    """Checks availability of ffmpeg and ffprobe on PATH."""
+    """Checks availability of ffmpeg, ffprobe, and yt-dlp."""
 
     def check_ffmpeg(self) -> dict[str, Any]:
         ffmpeg_path = shutil.which("ffmpeg")
@@ -51,6 +70,10 @@ class SystemPreflightAdapter:
             "ffmpeg_path": ffmpeg_path,
             "ffprobe_path": ffprobe_path,
         }
+
+    def check_ytdlp(self) -> dict[str, Any]:
+        """Check availability and version of yt-dlp."""
+        return _check_ytdlp_status()
 
 
 def _default_ydl_factory(opts: dict[str, Any]) -> Any:

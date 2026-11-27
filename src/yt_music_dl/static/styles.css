@@ -219,6 +219,19 @@ p.sub,
 
 .banner.visible {
   display: flex;
+  align-items: flex-start;
+}
+
+.banner-body {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.banner-steps {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 0.84rem;
+  line-height: 1.45;
 }
 
 form {

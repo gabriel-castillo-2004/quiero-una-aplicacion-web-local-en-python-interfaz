@@ -16,6 +16,7 @@ const backendStatusText = document.getElementById('backend-status-text');
 const formError = document.getElementById('form-error');
 const ffmpegBanner = document.getElementById('ffmpeg-warning');
 const ffmpegWarningText = document.getElementById('ffmpeg-warning-text');
+const healthRemediationSteps = document.getElementById('health-remediation-steps');
 
 const previewCard = document.getElementById('preview-card');
 const previewLoading = document.getElementById('preview-loading');
@@ -108,6 +109,10 @@ let currentJobId = null;
 let currentJobMeta = null;
 let currentPreview = null;
 let ffmpegAvailable = true;
+let ytdlpAvailable = true;
+let downloadDirWritable = true;
+let healthDetails = {};
+let lastHealthData = {};
 let eventSource = null;
 let pollTimer = null;
 let previewTimer = null;
@@ -174,16 +179,30 @@ function showFormError(message, options = {}) {
 async function checkBackendHealth(options = {}) {
   const { showErrorOnFail = false } = options;
   try {
-    const res = await fetch('/api/health');
+    const destVal = destInput ? destInput.value.trim() : '';
+    const res = destVal
+      ? await fetch(`/api/health?dest_dir=${encodeURIComponent(destVal)}`)
+      : await fetch('/api/health');
     const hData = await res.json().catch(() => ({}));
     ffmpegAvailable = Boolean(hData.ffmpeg_available);
+    ytdlpAvailable = hData.yt_dlp_available !== undefined ? Boolean(hData.yt_dlp_available) : true;
+    downloadDirWritable =
+      hData.download_dir_writable !== undefined ? Boolean(hData.download_dir_writable) : true;
+    healthDetails = hData.details || {};
+    lastHealthData = hData;
     updateFfmpegWarning();
     if (res.ok) {
       setBackendStatus('online', 'Conectado');
       return true;
     }
     if (res.status === 503) {
-      setBackendStatus('degraded', 'Conectado (sin ffmpeg)');
+      if (!ytdlpAvailable) {
+        setBackendStatus('degraded', 'Falta yt-dlp');
+      } else if (!downloadDirWritable) {
+        setBackendStatus('degraded', 'Sin permiso de escritura');
+      } else {
+        setBackendStatus('degraded', 'Conectado (sin ffmpeg)');
+      }
       return true;
     }
     setBackendStatus('offline', 'Error del servidor');
@@ -241,19 +260,75 @@ function updateProcessingEngineBadge(format) {
   processingEngineEl.classList.toggle('is-native', info.isNative);
 }
 
+function syncFfmpegFormatOptions() {
+  if (!formatQualitySelect) return;
+  for (const opt of Array.from(formatQualitySelect.options)) {
+    if (opt.value.startsWith('mp3:')) {
+      opt.disabled = !ffmpegAvailable;
+    }
+  }
+  if (!ffmpegAvailable && formatQualitySelect.value.startsWith('mp3:')) {
+    const fallbackOpt = Array.from(formatQualitySelect.options).find((opt) => !opt.disabled);
+    if (fallbackOpt) {
+      formatQualitySelect.value = fallbackOpt.value;
+    }
+  }
+}
+
 function updateFfmpegWarning() {
+  syncFfmpegFormatOptions();
   if (!ffmpegBanner) return;
   const { format } = parseFormatQuality();
   updateProcessingEngineBadge(format);
+
+  const missingMessages = [];
+  const steps = [];
+
   if (!ffmpegAvailable) {
+    const missingBins = [];
+    if (healthDetails.ffmpeg === false) missingBins.push('ffmpeg');
+    if (healthDetails.ffprobe === false) missingBins.push('ffprobe');
+    const binLabel = missingBins.length > 0 ? missingBins.join(' y ') : 'ffmpeg y ffprobe';
+    missingMessages.push(
+      `Falta ${binLabel} en el PATH. Las opciones de conversión a MP3 están bloqueadas; puedes descargar en M4A · Audio original o instalar ffmpeg.`
+    );
+    steps.push('Windows: ejecuta "winget install Gyan.FFmpeg" o agrega la carpeta bin de ffmpeg al PATH del sistema.');
+    steps.push('macOS: ejecuta "brew install ffmpeg" | Linux (Debian/Ubuntu): "sudo apt install ffmpeg".');
+    steps.push('Reinicia la aplicación después de instalar ffmpeg para desbloquear la conversión a MP3.');
+  }
+
+  if (!ytdlpAvailable) {
+    missingMessages.push('yt-dlp no está disponible en el entorno Python.');
+    steps.push('Instala o actualiza yt-dlp con "pip install -U yt-dlp" y reinicia el servidor.');
+  }
+
+  if (!downloadDirWritable) {
+    const dirPath = lastHealthData.download_dir || (destInput ? destInput.value.trim() : '');
+    missingMessages.push(
+      `Sin permisos de escritura en la carpeta de descargas${dirPath ? ` (${dirPath})` : ''}.`
+    );
+    steps.push('Otorga permisos de escritura a la carpeta o selecciona otra carpeta de destino válida.');
+  }
+
+  if (missingMessages.length > 0) {
     if (ffmpegWarningText) {
-      ffmpegWarningText.textContent =
-        format === 'mp3'
-          ? 'ffmpeg no está disponible en el sistema. Motor alternativo activo: yt-dlp nativo (no recodifica a MP3; elige M4A · Audio original o instala ffmpeg para usar ffmpeg / recodificación).'
-          : 'ffmpeg no está disponible en el sistema. Motor activo: yt-dlp nativo (descarga directa en M4A sin recodificación).';
+      ffmpegWarningText.textContent = missingMessages.join(' ');
+    }
+    if (healthRemediationSteps) {
+      healthRemediationSteps.replaceChildren();
+      for (const stepText of steps) {
+        const li = document.createElement('li');
+        li.textContent = stepText;
+        healthRemediationSteps.appendChild(li);
+      }
+      healthRemediationSteps.hidden = steps.length === 0;
     }
     ffmpegBanner.classList.add('visible');
   } else {
+    if (healthRemediationSteps) {
+      healthRemediationSteps.replaceChildren();
+      healthRemediationSteps.hidden = true;
+    }
     ffmpegBanner.classList.remove('visible');
   }
 }
@@ -1161,6 +1236,12 @@ if (pickFolderBtn) {
 
 if (formatQualitySelect) {
   formatQualitySelect.addEventListener('change', updateFfmpegWarning);
+}
+
+if (destInput) {
+  destInput.addEventListener('change', () => {
+    checkBackendHealth();
+  });
 }
 
 if (historySearch) {
